@@ -109,6 +109,7 @@ function bindEvents() {
     state.usernameHidden = !state.usernameHidden;
     try { localStorage.setItem('multia-hide-username', state.usernameHidden ? '1' : '0'); } catch {}
     applyUsernameMask();
+    if (state.data) renderReport(); // keep the Creator Summary text in sync immediately
   });
 
   els.periodTabs.addEventListener('click', (event) => {
@@ -1666,7 +1667,8 @@ function buildReportModel() {
     : null;
 
   return {
-    username: account.username || 'instagram',
+    // Respect the eye-icon toggle so the username stays hidden in the report / PDF / TXT too.
+    username: state.usernameHidden ? '••••••••' : (account.username || 'instagram'),
     followers: account.followers,
     range: formatRangeLabel(content) || '—',
     generatedAt: new Date(),
