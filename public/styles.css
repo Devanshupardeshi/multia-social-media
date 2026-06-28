@@ -685,6 +685,14 @@ input::placeholder {
   white-space: nowrap;
 }
 
+/* Caption under a delta badge stating exactly what the change is measured against. */
+.delta-note {
+  margin-top: 6px;
+  color: var(--subtle);
+  font-size: 0.72rem;
+  text-align: right;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
@@ -1079,6 +1087,14 @@ input::placeholder {
 .net-chip strong {
   font-size: 1.15rem;
   font-variant-numeric: tabular-nums;
+}
+
+.net-chip small {
+  display: block;
+  margin-top: 2px;
+  color: var(--subtle);
+  font-size: 0.68rem;
+  font-weight: 600;
 }
 
 .net-chip.up strong {

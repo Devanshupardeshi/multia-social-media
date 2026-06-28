@@ -102,6 +102,10 @@ export async function handleRequest(req, res) {
   try {
     const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
+    // Make sure any admin-saved config (incl. the saved refresh interval) is loaded
+    // before any route reads dashboardConfig.
+    await ensureConfigLoaded();
+
     if (requestUrl.pathname === '/api/admin/login') {
       return await handleAdminLogin(req, res);
     }
@@ -124,6 +128,10 @@ export async function handleRequest(req, res) {
 
     if (requestUrl.pathname === '/api/config/discover') {
       return await handleConfigDiscover(req, res);
+    }
+
+    if (requestUrl.pathname === '/api/refresh') {
+      return await handleRefreshInterval(req, res);
     }
 
     if (requestUrl.pathname === '/api/instagram') {
@@ -215,6 +223,36 @@ async function handleAdminLogin(req, res) {
     return sendJson(res, { ok: true });
   }
   return sendJson(res, { error: 'Incorrect password' }, 401);
+}
+
+// Save just the auto-refresh interval (non-sensitive, no admin password needed) so the
+// user's chosen cadence persists across reloads. Stored in Supabase if configured, else .env.
+async function handleRefreshInterval(req, res) {
+  if (req.method !== 'POST') {
+    return sendJson(res, { error: 'Method not allowed' }, 405);
+  }
+  const body = await readJsonBody(req);
+  const refreshMs = clamp(toNumber(body.refreshMs, dashboardConfig.refreshMs), 15000, 86400000);
+  dashboardConfig = { ...dashboardConfig, refreshMs };
+  process.env.DASHBOARD_REFRESH_MS = String(refreshMs);
+
+  let persisted = false;
+  if (supabaseEnabled()) {
+    try {
+      persisted = await kvSet('config', dashboardConfig);
+    } catch {
+      persisted = false;
+    }
+  }
+  if (!persisted) {
+    try {
+      writeDashboardEnv(dashboardConfig);
+      persisted = true;
+    } catch {
+      persisted = false;
+    }
+  }
+  return sendJson(res, { ok: true, refreshMs, persisted });
 }
 
 async function handleConfig(req, res) {
@@ -423,7 +461,9 @@ async function getDashboardData({ limit = 500, allMedia = true, force = false } 
   await ensureConfigLoaded();
   const now = Date.now();
   const cacheKey = `${limit}:${allMedia ? 'all' : 'recent'}`;
-  if (!force && cachedLiveData && cachedUntil > now && cachedKey === cacheKey) {
+  // Without force (a plain page load), return the last computed data regardless of age -
+  // a real sync only happens on the manual button or the scheduled poll (force=1).
+  if (!force && cachedLiveData && cachedKey === cacheKey) {
     return cachedLiveData;
   }
 

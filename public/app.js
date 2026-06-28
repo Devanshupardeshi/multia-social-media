@@ -79,7 +79,7 @@ init();
 async function init() {
   bindEvents();
   await loadStatus();
-  await refreshNow();
+  await refreshNow(true, false); // initial load: show last data, do not force a sync
   connectLiveStream();
 }
 
@@ -87,6 +87,12 @@ function bindEvents() {
   els.refreshSelect.addEventListener('change', () => {
     state.refreshMs = Number(els.refreshSelect.value);
     connectLiveStream();
+    // Persist the chosen interval so it survives reloads.
+    fetch('/api/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshMs: state.refreshMs })
+    }).catch(() => {});
   });
 
   els.manualRefresh.addEventListener('click', () => refreshNow());
@@ -309,7 +315,7 @@ function csvValue(value) {
   return `"${String(value ?? '').replaceAll('"', '""')}"`;
 }
 
-async function refreshNow(silent = false) {
+async function refreshNow(silent = false, force = true) {
   if (state.isRefreshing) return;
 
   state.isRefreshing = true;
@@ -319,7 +325,9 @@ async function refreshNow(silent = false) {
   }
 
   try {
-    const data = await fetchJson('/api/instagram?force=1&all=1&limit=1000');
+    // Only a button click or the scheduled poll forces a fresh sync (force=1).
+    // A plain page load reads the last data without re-syncing.
+    const data = await fetchJson(`/api/instagram?all=1&limit=1000${force ? '&force=1' : ''}`);
     updateData(data);
     updateLiveBadge(data.mode === 'graph-api' ? 'connected' : 'demo', data.mode === 'graph-api' ? 'Live' : 'Demo live');
   } catch (error) {
@@ -406,6 +414,10 @@ function renderSummary() {
   const dayTitle = dayReady
     ? (day.basis === 'previous-day' ? `Change vs ${shortDate(day.sinceDate)}` : 'Change so far today')
     : 'Change since last sync';
+  // Visible note so the user knows exactly what the +/- is measured against.
+  const deltaRef = dayReady
+    ? (day.basis === 'previous-day' ? `vs ${shortDate(day.sinceDate)}` : 'vs start of today')
+    : 'vs last sync';
   const viewsDelta = dayReady ? signedCompact(day.views) : `+${compactNumber(summary.deltaViews)}`;
   const interactionsDelta = dayReady ? signedCompact(day.interactions) : `+${compactNumber(summary.deltaInteractions)}`;
   const cards = [
@@ -415,6 +427,7 @@ function renderSummary() {
       exact: metricExact(summary.totalViews),
       delta: viewsDelta,
       deltaTitle: dayTitle,
+      deltaNote: deltaRef,
       sub: `All-time · ${formatNumber(summary.contentCount)} posts`
     },
     {
@@ -430,6 +443,7 @@ function renderSummary() {
       exact: metricExact(summary.totalInteractions),
       delta: interactionsDelta,
       deltaTitle: dayTitle,
+      deltaNote: deltaRef,
       sub: `${compactNumber(summary.totalLikes)} likes`
     },
     {
@@ -459,6 +473,7 @@ function renderSummary() {
         <span>${escapeHtml(card.sub)}</span>
         <span class="delta"${card.deltaTitle ? ` title="${escapeAttribute(card.deltaTitle)}"` : ''}>${escapeHtml(card.delta)}</span>
       </div>
+      ${card.deltaNote ? `<div class="delta-note">${escapeHtml(card.deltaNote)}</div>` : ''}
     </article>
   `).join('');
 }
@@ -1407,9 +1422,15 @@ function renderFollowerGrowth() {
   const trend = state.data.summary.followerTrend || { available: false, dayNet: 0, weekNet: 0, series: [] };
   const series = trend.series || [];
 
-  const chip = (label, value) => {
+  // Exact reference dates so the user knows what each net change is measured against.
+  const prevDate = series.length >= 2 ? series[series.length - 2].date : null;
+  const weekStartDate = series.length >= 2 ? series[Math.max(0, series.length - 8)].date : null;
+  const dayRef = prevDate ? `vs ${shortDate(prevDate)}` : '';
+  const weekRef = weekStartDate ? `vs ${shortDate(weekStartDate)}` : '';
+
+  const chip = (label, value, note) => {
     const cls = value > 0 ? 'up' : value < 0 ? 'down' : 'flat';
-    return `<div class="net-chip ${cls}"><span>${escapeHtml(label)}</span><strong>${signedCompact(value)}</strong></div>`;
+    return `<div class="net-chip ${cls}"><span>${escapeHtml(label)}</span><strong>${signedCompact(value)}</strong>${note ? `<small>${escapeHtml(note)}</small>` : ''}</div>`;
   };
 
   let spark;
@@ -1439,8 +1460,8 @@ function renderFollowerGrowth() {
         <span class="fg-exact">${formatNumber(account.followers)} total · ${formatNumber(account.follows)} following</span>
       </div>
       <div class="fg-nets">
-        ${chip('Net today', trend.dayNet || 0)}
-        ${chip('Net this week', trend.weekNet || 0)}
+        ${chip('Net today', trend.dayNet || 0, dayRef)}
+        ${chip('Net this week', trend.weekNet || 0, weekRef)}
       </div>
     </div>
     <div class="fg-spark">${spark}</div>
