@@ -1670,7 +1670,8 @@ function advanceDemoState() {
 }
 
 async function serveStatic(requestUrl, res) {
-  const pathname = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
+  let pathname = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
+  if (pathname === '/admin' || pathname === '/admin/') pathname = '/admin.html';
   const decodedPath = decodeURIComponent(pathname);
   const requestedPath = path.normalize(path.join(publicDir, decodedPath));
 

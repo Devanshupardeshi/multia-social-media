@@ -1,7 +1,9 @@
 # Deploying to Vercel
 
-This app runs on Vercel as static files (`public/`) plus one serverless function
-(`api/[...path].js`) that handles every `/api/*` route.
+This app runs on Vercel as a single serverless function (`api/index.js`) that serves
+both the static pages and the API — `vercel.json` routes every request to it, so it
+behaves exactly like the local server. `server.mjs` is imported by that function (it is
+never deployed as a function on its own).
 
 ## 1. Set Environment Variables (Vercel → Project → Settings → Environment Variables)
 
