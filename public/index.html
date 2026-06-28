@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Instagram Accuracy Command Center</title>
+    <link rel="stylesheet" href="/styles.css?v=18">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Dashboard navigation">
+        <a class="brand" href="/" aria-label="Dashboard home">
+          <span class="brand-mark">M</span>
+          <span>
+            <strong>Multia</strong>
+            <small>Instagram Ops</small>
+          </span>
+        </a>
+
+        <nav class="nav-list">
+          <a class="nav-item active" href="#overview">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            </span>
+            Overview
+          </a>
+          <a class="nav-item" href="#analytics">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6" rx="0.5"/><rect x="12" y="7" width="3" height="10" rx="0.5"/><rect x="17" y="13" width="3" height="4" rx="0.5"/></svg>
+            </span>
+            Analytics
+          </a>
+          <a class="nav-item" href="#audience">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </span>
+            Audience
+          </a>
+          <a class="nav-item" href="#operations">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+            </span>
+            Operations
+          </a>
+          <a class="nav-item" href="/admin">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </span>
+            Admin
+          </a>
+          <a class="nav-item" href="#reels">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="7" y1="3" x2="7" y2="21"/><line x1="17" y1="3" x2="17" y2="21"/><line x1="3" y1="9" x2="7" y2="9"/><line x1="3" y1="15" x2="7" y2="15"/><line x1="17" y1="9" x2="21" y2="9"/><line x1="17" y1="15" x2="21" y2="15"/></svg>
+            </span>
+            Content
+          </a>
+          <a class="nav-item" href="#guide">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h6a3 3 0 0 1 3 3v13a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 4h-6a3 3 0 0 0-3 3v13a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>
+            </span>
+            Guide
+          </a>
+          <a class="nav-item" href="#pulse">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            </span>
+            Live Pulse
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <span class="mini-label">Connection</span>
+          <span class="connection-chip" id="connection-chip">
+            <span class="status-dot"></span>
+            Connecting
+          </span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="account-block">
+            <div class="avatar" id="account-avatar" aria-hidden="true">IG</div>
+            <div>
+              <p class="eyebrow">Instagram professional dashboard</p>
+              <h1 id="account-title">Instagram command center</h1>
+              <p class="meta-line" id="account-meta">Loading account metrics</p>
+            </div>
+          </div>
+
+          <div class="toolbar" aria-label="Dashboard controls">
+            <label class="select-label">
+              <span>Refresh</span>
+              <select id="refresh-select">
+                <option value="30000">30 sec</option>
+                <option value="60000" selected>1 min</option>
+                <option value="120000">2 min</option>
+                <option value="300000">5 min</option>
+                <option value="86400000">1 day</option>
+              </select>
+            </label>
+            <button class="primary-button" id="manual-refresh" type="button">
+              Sync now
+            </button>
+          </div>
+        </header>
+
+        <section class="notice hidden" id="warning-panel" aria-live="polite"></section>
+
+        <section class="dashboard-head" id="overview">
+          <div>
+            <p class="section-label">Overview</p>
+            <h2>Live Instagram performance command center</h2>
+          </div>
+          <div class="sync-meta">
+            <span id="live-badge" class="live-badge loading">Connecting</span>
+            <span id="last-updated">Not synced yet</span>
+          </div>
+        </section>
+
+        <section class="summary-grid" id="summary-grid" aria-label="Key metrics">
+          <article class="metric-card skeleton"></article>
+          <article class="metric-card skeleton"></article>
+          <article class="metric-card skeleton"></article>
+          <article class="metric-card skeleton"></article>
+          <article class="metric-card skeleton"></article>
+        </section>
+
+        <section class="section-heading" id="analytics">
+          <div>
+            <p class="section-label">Analytics</p>
+            <h2>Performance graphs and posting intelligence</h2>
+          </div>
+        </section>
+
+        <div class="analytics-grid">
+          <section class="panel chart-panel analytics-wide" aria-labelledby="trend-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-label">Trend explorer</p>
+                <h2 id="trend-title">Metric trend by publish date</h2>
+                <span class="panel-dates"></span>
+              </div>
+              <div class="panel-controls">
+                <div class="segmented" id="metric-tabs" role="tablist" aria-label="Trend metric">
+                  <button class="active" type="button" data-metric="views">Views</button>
+                  <button type="button" data-metric="reach">Reach</button>
+                  <button type="button" data-metric="interactions">Interactions</button>
+                </div>
+                <div class="segmented" id="period-tabs" role="tablist" aria-label="Date range">
+                  <button type="button" data-period="14">14D</button>
+                  <button type="button" data-period="30">30D</button>
+                  <button class="active" type="button" data-period="all">All</button>
+                </div>
+                <div class="segmented" id="scale-tabs" role="tablist" aria-label="Value scale">
+                  <button type="button" data-scale="linear">Linear</button>
+                  <button class="active" type="button" data-scale="log">Log</button>
+                </div>
+              </div>
+            </div>
+            <div class="chart-wrap" id="trend-chart">
+              <div class="chart-empty">Waiting for content data</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="chart-insight-side-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Selected insight</p>
+                <h2 id="chart-insight-side-title">Graph details</h2>
+              </div>
+            </div>
+            <div class="chart-insight insight-side" id="chart-insight-side" aria-live="polite">
+              Select any point, bar or segment to see its exact numbers.
+            </div>
+          </section>
+
+          <section class="panel chart-panel analytics-full" id="reach" aria-labelledby="reach-title">
+            <div class="panel-header">
+              <div>
+                <p class="section-label">Daily reach</p>
+                <h2 id="reach-title">Reach by day</h2>
+              </div>
+              <div class="range-control">
+                <button class="secondary-button small-button range-trigger" id="reach-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="reach-calendar">
+                  <span id="reach-range-label">Last 30 days</span>
+                  <span class="range-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="calendar-pop" id="reach-calendar" role="dialog" aria-label="Select date range" hidden></div>
+              </div>
+            </div>
+            <div class="chart-wrap" id="reach-chart">
+              <div class="chart-empty">Waiting for content data</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="funnel-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Audience path</p>
+                <h2 id="funnel-title">Views to saves funnel</h2>
+                <span class="panel-dates"></span>
+              </div>
+            </div>
+            <div class="mini-chart" id="funnel-chart">
+              <div class="chart-empty">Waiting for metrics</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="saves-shares-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Intent signals</p>
+                <h2 id="saves-shares-title">Saves and shares</h2>
+                <span class="panel-dates"></span>
+              </div>
+            </div>
+            <div class="mini-chart" id="saves-shares-chart">
+              <div class="chart-empty">Waiting for metrics</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="heatmap-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Best time</p>
+                <h2 id="heatmap-title">Posting heatmap</h2>
+                <span class="panel-dates"></span>
+              </div>
+            </div>
+            <div class="mini-chart" id="heatmap-chart">
+              <div class="chart-empty">Waiting for content</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="scatter-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Quality map</p>
+                <h2 id="scatter-title">Reach vs engagement</h2>
+                <span class="panel-dates"></span>
+              </div>
+            </div>
+            <div class="mini-chart" id="scatter-chart">
+              <div class="chart-empty">Waiting for content</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="distribution-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Distribution</p>
+                <h2 id="distribution-title">Views spread</h2>
+                <span class="panel-dates"></span>
+              </div>
+            </div>
+            <div class="mini-chart" id="distribution-chart">
+              <div class="chart-empty">Waiting for content</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="engagement-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Engagement mix</p>
+                <h2 id="engagement-title">Where engagement comes from</h2>
+                <span class="panel-dates"></span>
+              </div>
+            </div>
+            <div class="mini-chart" id="engagement-chart">
+              <div class="chart-empty">Waiting for content</div>
+            </div>
+          </section>
+
+          <section class="panel analytics-full" aria-labelledby="chart-insight-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Selected insight</p>
+                <h2 id="chart-insight-title">Graph details</h2>
+              </div>
+            </div>
+            <div class="chart-insight" id="chart-insight" aria-live="polite">
+              Select any point, bar or segment to see its exact numbers.
+            </div>
+          </section>
+        </div>
+
+        <section class="section-heading" id="audience">
+          <div>
+            <p class="section-label">Audience</p>
+            <h2>Followers, demographics and gender split</h2>
+          </div>
+        </section>
+
+        <div class="audience-grid">
+          <section class="panel account-panel" aria-labelledby="aud-perf-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Account performance</p>
+                <h2 id="aud-perf-title">Views, reach &amp; reach source</h2>
+              </div>
+              <label class="select-label" id="account-window-label" hidden>
+                <span>Window</span>
+                <select id="account-window"></select>
+              </label>
+            </div>
+            <div id="account-insights">
+              <div class="chart-empty">Waiting for account insights</div>
+            </div>
+          </section>
+
+          <section class="panel audience-hero" aria-labelledby="aud-followers-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Follower growth</p>
+                <h2 id="aud-followers-title">Followers over time</h2>
+              </div>
+            </div>
+            <div id="follower-growth">
+              <div class="chart-empty">Waiting for follower data</div>
+            </div>
+          </section>
+
+          <section class="panel audience-wide" aria-labelledby="aud-gender-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">By gender</p>
+                <h2 id="aud-gender-title">Reach &amp; interactions by gender</h2>
+              </div>
+              <label class="select-label" id="gender-timeframe-label" hidden>
+                <span>Window</span>
+                <select id="gender-timeframe"></select>
+              </label>
+            </div>
+            <div id="gender-breakdown">
+              <div class="chart-empty">Waiting for audience data</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="aud-demo-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Demographics</p>
+                <h2 id="aud-demo-title">Who follows you</h2>
+              </div>
+            </div>
+            <div id="audience-demographics">
+              <div class="chart-empty">Waiting for audience data</div>
+            </div>
+          </section>
+        </div>
+
+        <section class="section-heading" id="operations">
+          <div>
+            <p class="section-label">Operations</p>
+            <h2>Accuracy, movement, and reporting controls</h2>
+          </div>
+        </section>
+
+        <div class="operations-grid">
+          <section class="panel live-panel" id="pulse" aria-labelledby="pulse-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Live pulse</p>
+                <h2 id="pulse-title">Recent movement</h2>
+              </div>
+            </div>
+            <div class="activity-feed" id="activity-feed">
+              <div class="empty-rail">No movement yet</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="top-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Leaderboard</p>
+                <h2 id="top-title">Top content by views</h2>
+              </div>
+            </div>
+            <div class="top-reels" id="top-reels">
+              <div class="empty-rail">Top content will appear here</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="followers-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Followers</p>
+                <h2 id="followers-title">Audience snapshot</h2>
+              </div>
+            </div>
+            <div class="follower-panel" id="follower-panel">
+              <div class="empty-rail">Follower metrics will appear here</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="accuracy-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Accuracy center</p>
+                <h2 id="accuracy-title">Data quality status</h2>
+              </div>
+            </div>
+            <div class="accuracy-list" id="accuracy-center">
+              <div class="empty-rail">Waiting for diagnostics</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="compare-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Compare mode</p>
+                <h2 id="compare-title">Content type comparison</h2>
+              </div>
+            </div>
+            <div class="compare-board" id="compare-board">
+              <div class="empty-rail">Content types will appear here</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="mix-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Inventory mix</p>
+                <h2 id="mix-title">Tracked media types</h2>
+              </div>
+            </div>
+            <div class="mix-list" id="content-mix">
+              <div class="empty-rail">Content mix will appear here</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="report-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Report</p>
+                <h2 id="report-title">Creator summary</h2>
+              </div>
+              <div class="report-actions">
+                <button class="secondary-button small-button" id="export-pdf" type="button">Export PDF</button>
+                <button class="secondary-button small-button" id="copy-report" type="button">Copy</button>
+              </div>
+            </div>
+            <div class="report-box" id="report-box">
+              <div class="empty-rail">Report will appear after sync</div>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel reels-panel" id="reels" aria-labelledby="reels-title">
+          <div class="panel-header table-header">
+            <div>
+              <p class="section-label">Content inventory</p>
+              <h2 id="reels-title">All tracked posts</h2>
+            </div>
+            <div class="table-tools">
+              <label class="search-box">
+                <span class="visually-hidden">Search content</span>
+                <input id="search-input" type="search" placeholder="Search captions">
+              </label>
+              <label class="select-label">
+                <span>Type</span>
+                <select id="content-type-select">
+                  <option value="all">All</option>
+                  <option value="reel">Reels</option>
+                  <option value="video">Videos</option>
+                  <option value="image">Images</option>
+                  <option value="carousel">Carousels</option>
+                </select>
+              </label>
+              <label class="select-label">
+                <span>Signal</span>
+                <select id="signal-filter-select">
+                  <option value="all">All</option>
+                  <option value="breakout">Breakout</option>
+                  <option value="fast">Fast movers</option>
+                  <option value="missing-core">Missing metrics</option>
+                </select>
+              </label>
+              <label class="field-inline">
+                <span class="visually-hidden">Minimum views</span>
+                <input id="min-views-input" type="number" inputmode="numeric" min="0" step="1000" placeholder="Min views">
+              </label>
+              <label class="select-label">
+                <span>Sort</span>
+                <select id="sort-select">
+                  <option value="views">Views</option>
+                  <option value="deltaViews">Velocity</option>
+                  <option value="reach">Reach</option>
+                  <option value="interactions">Interactions</option>
+                  <option value="engagementRate">Engagement</option>
+                  <option value="avgWatchTime">Watch time</option>
+                  <option value="contentScore">Score</option>
+                  <option value="timestamp">Newest</option>
+                </select>
+              </label>
+              <button class="secondary-button" id="export-csv" type="button">Export CSV</button>
+            </div>
+          </div>
+
+          <div class="content-detail" id="content-detail" aria-live="polite">
+            Select a reel or post to inspect exact content metrics.
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="caption">Content</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="contentTypeLabel">Type</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="views">Views</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="deltaViews">Velocity</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="reach">Reach</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="interactions">Interactions</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="engagementRate">Engagement</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="avgWatchTime">Watch time</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="contentScore">Score</button></th>
+                  <th scope="col"><button class="sort-button" type="button" data-sort="timestamp">Posted</button></th>
+                </tr>
+              </thead>
+              <tbody id="reels-tbody">
+                <tr>
+                  <td colspan="10">
+                    <div class="table-loading">Loading content</div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="mobile-reels" id="mobile-reels"></div>
+        </section>
+
+        <section class="panel guide-panel" id="guide" aria-labelledby="guide-title">
+          <div class="panel-header">
+            <div>
+              <p class="section-label">Tracking guide</p>
+              <h2 id="guide-title">Full Instagram tracking setup</h2>
+            </div>
+          </div>
+          <div class="guide-grid">
+            <article class="guide-card">
+              <h3>1. Connect correctly</h3>
+              <p>Use Instagram Login for tokens generated from the Instagram setup page. Paste the Instagram account ID shown under the username, then Save and test.</p>
+            </article>
+            <article class="guide-card">
+              <h3>2. Track everything</h3>
+              <p>The server pages through the media API and loads every available post until Meta stops returning more pages or the local safety limit is reached.</p>
+            </article>
+            <article class="guide-card">
+              <h3>3. Read the metrics</h3>
+              <p>Views use views, plays, or impressions when Meta exposes them. Reach, saves, shares, comments, likes, and total interactions are loaded when available for that media type.</p>
+            </article>
+            <article class="guide-card">
+              <h3>4. Operate weekly</h3>
+              <p>Sort by velocity during launch windows, sort by engagement for creative review, filter by type to compare reels against feed posts, then export CSV for reporting.</p>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js?v=25" type="module"></script>
+  </body>
+</html>

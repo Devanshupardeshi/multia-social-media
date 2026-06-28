@@ -1,0 +1,32 @@
+# Secrets & environment
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+server.runtime.log
+server.out.log
+server.err.log
+
+# Local runtime data (persisted in Supabase in production)
+metrics-history.json
+marker.txt
+
+# Graphify knowledge-graph output (generated, not needed in the repo)
+graphify-out/
+.graphify_python
+
+# Vercel
+.vercel/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.tmp
