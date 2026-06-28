@@ -1408,6 +1408,7 @@ function saveMetricsHistory() {
 function trackDailyMetrics(totals) {
   const key = todayKey();
   const snapshot = {
+    at: new Date().toISOString(),
     views: totals.views,
     reach: totals.reach,
     interactions: totals.interactions,
@@ -1440,6 +1441,7 @@ function trackDailyMetrics(totals) {
     available: true,
     basis,
     sinceDate,
+    sinceTime: baseline.at || null,
     views: snapshot.views - baseline.views,
     reach: snapshot.reach - baseline.reach,
     interactions: snapshot.interactions - baseline.interactions,
@@ -1473,7 +1475,8 @@ function buildFollowerTrend(account, mode) {
   for (const date of dates) {
     const followers = metricsHistory[date]?.last?.followers;
     if (typeof followers !== 'number') continue;
-    series.push({ date, followers, net: prevFollowers === null ? 0 : followers - prevFollowers });
+    const at = metricsHistory[date]?.last?.at || null;
+    series.push({ date, at, followers, net: prevFollowers === null ? 0 : followers - prevFollowers });
     prevFollowers = followers;
   }
 

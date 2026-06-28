@@ -191,6 +191,39 @@ a {
   font-weight: 760;
 }
 
+.account-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.title-eye:hover {
+  color: var(--primary-dark);
+  border-color: var(--primary-dark);
+}
+
+.title-eye svg {
+  width: 16px;
+  height: 16px;
+}
+
 .connection-chip,
 .live-badge {
   display: inline-flex;

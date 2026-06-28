@@ -17,13 +17,15 @@ const state = {
   reachRange: null,
   reachCal: null,
   audienceTimeframe: null,
-  accountWindow: null
+  accountWindow: null,
+  usernameHidden: false
 };
 
 const els = {
   connectionChip: document.querySelector('#connection-chip'),
   accountAvatar: document.querySelector('#account-avatar'),
   accountTitle: document.querySelector('#account-title'),
+  toggleUsername: document.querySelector('#toggle-username'),
   accountMeta: document.querySelector('#account-meta'),
   refreshSelect: document.querySelector('#refresh-select'),
   manualRefresh: document.querySelector('#manual-refresh'),
@@ -77,6 +79,8 @@ const els = {
 init();
 
 async function init() {
+  try { state.usernameHidden = localStorage.getItem('multia-hide-username') === '1'; } catch {}
+  applyUsernameMask();
   bindEvents();
   await loadStatus();
   await refreshNow(true, false); // initial load: show last data, do not force a sync
@@ -96,6 +100,12 @@ function bindEvents() {
   });
 
   els.manualRefresh.addEventListener('click', () => refreshNow());
+
+  els.toggleUsername?.addEventListener('click', () => {
+    state.usernameHidden = !state.usernameHidden;
+    try { localStorage.setItem('multia-hide-username', state.usernameHidden ? '1' : '0'); } catch {}
+    applyUsernameMask();
+  });
 
   els.periodTabs.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-period]');
@@ -383,9 +393,28 @@ function render() {
   renderReels();
 }
 
+const EYE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+// Toggle for hiding the username (e.g. for screenshots). Persisted so it stays hidden.
+function applyUsernameMask() {
+  const hidden = state.usernameHidden;
+  if (els.toggleUsername) {
+    els.toggleUsername.innerHTML = hidden ? EYE_OFF_SVG : EYE_SVG;
+    els.toggleUsername.setAttribute('aria-pressed', String(hidden));
+    els.toggleUsername.setAttribute('aria-label', hidden ? 'Show username' : 'Hide username');
+    els.toggleUsername.title = hidden ? 'Show username' : 'Hide username';
+  }
+  if (!state.data) return;
+  const username = state.data.account.username || 'instagram';
+  els.accountTitle.textContent = hidden ? '@••••••••' : `@${username}`;
+  if (!safeUrl(state.data.account.profilePictureUrl)) {
+    els.accountAvatar.textContent = hidden ? '•' : initials(username);
+  }
+}
+
 function renderAccount() {
   const { account, summary, updatedAt, graphApiVersion } = state.data;
-  els.accountTitle.textContent = `@${account.username}`;
   els.accountMeta.textContent = `${formatNumber(account.followers)} followers - ${formatNumber(summary.contentCount)} items loaded - ${graphApiVersion}`;
   els.lastUpdated.textContent = `Updated ${formatTime(updatedAt)}`;
 
@@ -395,6 +424,7 @@ function renderAccount() {
   } else {
     els.accountAvatar.textContent = initials(account.username);
   }
+  applyUsernameMask();
 }
 
 function renderWarnings() {
@@ -416,7 +446,9 @@ function renderSummary() {
     : 'Change since last sync';
   // Visible note so the user knows exactly what the +/- is measured against.
   const deltaRef = dayReady
-    ? (day.basis === 'previous-day' ? `vs ${shortDate(day.sinceDate)}` : 'vs start of today')
+    ? (day.sinceTime
+      ? `vs ${formatDateTime(day.sinceTime)}`
+      : (day.basis === 'previous-day' ? `vs ${shortDate(day.sinceDate)}` : 'vs start of today'))
     : 'vs last sync';
   const viewsDelta = dayReady ? signedCompact(day.views) : `+${compactNumber(summary.deltaViews)}`;
   const interactionsDelta = dayReady ? signedCompact(day.interactions) : `+${compactNumber(summary.deltaInteractions)}`;
@@ -1422,11 +1454,14 @@ function renderFollowerGrowth() {
   const trend = state.data.summary.followerTrend || { available: false, dayNet: 0, weekNet: 0, series: [] };
   const series = trend.series || [];
 
-  // Exact reference dates so the user knows what each net change is measured against.
-  const prevDate = series.length >= 2 ? series[series.length - 2].date : null;
-  const weekStartDate = series.length >= 2 ? series[Math.max(0, series.length - 8)].date : null;
-  const dayRef = prevDate ? `vs ${shortDate(prevDate)}` : '';
-  const weekRef = weekStartDate ? `vs ${shortDate(weekStartDate)}` : '';
+  // Exact reference time/date so the user knows what each net change is measured against.
+  const prevPoint = series.length >= 2 ? series[series.length - 2] : null;
+  const weekPoint = series.length >= 2 ? series[Math.max(0, series.length - 8)] : null;
+  const refLabel = (point) => point
+    ? `vs ${point.at ? formatDateTime(point.at) : shortDate(point.date)}`
+    : '';
+  const dayRef = refLabel(prevPoint);
+  const weekRef = refLabel(weekPoint);
 
   const chip = (label, value, note) => {
     const cls = value > 0 ? 'up' : value < 0 ? 'down' : 'flat';
@@ -2344,6 +2379,15 @@ function formatTime(value) {
     hour: 'numeric',
     minute: '2-digit'
   }).format(new Date(value));
+}
+
+// Exact date + time, e.g. "Jun 27, 9:14 PM" - used for "compared to" captions.
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en', {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+  }).format(date);
 }
 
 function relativeDate(value) {
