@@ -454,7 +454,10 @@ async function getGraphDashboardData({ limit = 500, allMedia = true } = {}, acti
   const mediaResponse = await fetchAllMedia(activeConfig, { limit, allMedia });
   warnings.push(...mediaResponse.warnings);
 
-  const insightResults = await mapWithConcurrency(mediaResponse.media, 4, async (media) => {
+  // Concurrency is high so loading every post's insights fits inside a serverless
+  // function's time budget (Vercel caps at 60s); the total call count is unchanged.
+  const insightConcurrency = clamp(toNumber(process.env.INSIGHT_CONCURRENCY, 16), 1, 32);
+  const insightResults = await mapWithConcurrency(mediaResponse.media, insightConcurrency, async (media) => {
     const result = await fetchInsights(media.id, activeConfig, { isReel: media.media_product_type === 'REELS' });
     if (result.warning) warnings.push(`Insights for ${media.id}: ${result.warning}`);
     return result.metrics;
