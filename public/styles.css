@@ -877,6 +877,18 @@ input::placeholder {
   background: var(--blue) !important;
 }
 
+.legend-bar.views {
+  background: var(--primary-dark) !important;
+}
+
+.legend-bar.reach {
+  background: var(--blue) !important;
+}
+
+.legend-bar.interactions {
+  background: var(--amber) !important;
+}
+
 .legend-save {
   background: var(--blue) !important;
 }
@@ -920,6 +932,36 @@ input::placeholder {
 .chart-bar {
   fill: var(--blue);
   opacity: 0.55;
+}
+
+.trend-bar {
+  opacity: 0.72;
+  transition: opacity 0.15s ease, filter 0.15s ease;
+}
+
+.trend-bar.views {
+  fill: var(--primary-dark);
+}
+
+.trend-bar.reach {
+  fill: var(--blue);
+}
+
+.trend-bar.interactions {
+  fill: var(--amber);
+}
+
+.trend-bar.active {
+  opacity: 1;
+}
+
+.trend-bar.muted {
+  opacity: 0.42;
+}
+
+.trend-bar:hover,
+.trend-bar:focus-visible {
+  opacity: 1;
 }
 
 .reach-bar {
@@ -1444,6 +1486,10 @@ input::placeholder {
 .range-caret {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.range-trigger:disabled {
+  cursor: default;
 }
 
 .calendar-pop {

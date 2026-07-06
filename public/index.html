@@ -141,7 +141,7 @@
             <div class="panel-header">
               <div>
                 <p class="section-label">Trend explorer</p>
-                <h2 id="trend-title">Metric trend by publish date</h2>
+                <h2 id="trend-title">Daily account performance</h2>
                 <span class="panel-dates"></span>
               </div>
               <div class="panel-controls">
@@ -154,10 +154,6 @@
                   <button type="button" data-period="14">14D</button>
                   <button type="button" data-period="30">30D</button>
                   <button class="active" type="button" data-period="all">All</button>
-                </div>
-                <div class="segmented" id="scale-tabs" role="tablist" aria-label="Value scale">
-                  <button type="button" data-scale="linear">Linear</button>
-                  <button class="active" type="button" data-scale="log">Log</button>
                 </div>
               </div>
             </div>
@@ -181,15 +177,21 @@
           <section class="panel chart-panel analytics-full" id="reach" aria-labelledby="reach-title">
             <div class="panel-header">
               <div>
-                <p class="section-label">Daily reach</p>
+                <p class="section-label">Account reach</p>
                 <h2 id="reach-title">Reach by day</h2>
               </div>
-              <div class="range-control">
-                <button class="secondary-button small-button range-trigger" id="reach-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="reach-calendar">
-                  <span id="reach-range-label">Last 30 days</span>
-                  <span class="range-caret" aria-hidden="true">▾</span>
-                </button>
-                <div class="calendar-pop" id="reach-calendar" role="dialog" aria-label="Select date range" hidden></div>
+              <div class="panel-controls">
+                <div class="segmented" id="reach-granularity-tabs" role="tablist" aria-label="Reach view">
+                  <button class="active" type="button" data-reach-granularity="day">Daily</button>
+                  <button type="button" data-reach-granularity="month">Monthly</button>
+                </div>
+                <div class="range-control">
+                  <button class="secondary-button small-button range-trigger" id="reach-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="reach-calendar">
+                    <span id="reach-range-label">Last 30 days</span>
+                    <span class="range-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div class="calendar-pop" id="reach-calendar" role="dialog" aria-label="Select date range" hidden></div>
+                </div>
               </div>
             </div>
             <div class="chart-wrap" id="reach-chart">

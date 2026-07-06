@@ -4,7 +4,7 @@ const state = {
   refreshMs: 60000,
   period: 'all',
   chartMetric: 'views',
-  chartScale: 'log',
+  reachGranularity: 'day',
   selectedInsight: null,
   selectedContentId: '',
   sort: 'views',
@@ -36,7 +36,7 @@ const els = {
   trendChart: document.querySelector('#trend-chart'),
   periodTabs: document.querySelector('#period-tabs'),
   metricTabs: document.querySelector('#metric-tabs'),
-  scaleTabs: document.querySelector('#scale-tabs'),
+  reachGranularityTabs: document.querySelector('#reach-granularity-tabs'),
   funnelChart: document.querySelector('#funnel-chart'),
   savesSharesChart: document.querySelector('#saves-shares-chart'),
   heatmapChart: document.querySelector('#heatmap-chart'),
@@ -44,6 +44,7 @@ const els = {
   distributionChart: document.querySelector('#distribution-chart'),
   engagementChart: document.querySelector('#engagement-chart'),
   reachChart: document.querySelector('#reach-chart'),
+  reachTitle: document.querySelector('#reach-title'),
   reachRangeTrigger: document.querySelector('#reach-range-trigger'),
   reachRangeLabel: document.querySelector('#reach-range-label'),
   reachCalendar: document.querySelector('#reach-calendar'),
@@ -135,12 +136,13 @@ function bindEvents() {
     renderCharts();
   });
 
-  els.scaleTabs?.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-scale]');
+  els.reachGranularityTabs?.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-reach-granularity]');
     if (!button) return;
 
-    state.chartScale = button.dataset.scale;
-    els.scaleTabs.querySelectorAll('button').forEach((item) => {
+    state.reachGranularity = button.dataset.reachGranularity;
+    state.selectedInsight = null;
+    els.reachGranularityTabs.querySelectorAll('button').forEach((item) => {
       item.classList.toggle('active', item === button);
     });
     renderCharts();
@@ -515,7 +517,7 @@ function renderSummary() {
 function renderCharts() {
   const content = getVisibleContent({ includeQuery: false, includeSignal: false, includeMinViews: false });
   renderTrendChart(content);
-  renderReachChart(content);
+  renderAccountReachChart(content);
   renderFunnelChart(content);
   renderSavesSharesChart(content);
   renderHeatmapChart(content);
@@ -588,18 +590,14 @@ function markSelectedInsight() {
   });
 }
 
-function renderTrendChart(content) {
+function renderLegacyTrendChart(content) {
   const metric = state.chartMetric;
   const metricName = metricTitle(metric);
   const trend = buildTrendFromContent(content, metric);
   setPanelDates(els.trendChart, trend.length ? `${shortDate(trend[0].key)} – ${shortDate(trend[trend.length - 1].key)}` : '');
   const maxValue = Math.max(1, ...trend.map((item) => item.value));
-  // Log scale keeps a single viral spike from flattening every other day into the baseline.
-  const useLog = state.chartScale !== 'linear';
-  const logMax = Math.log10(maxValue + 1);
   const scaleRatio = (value) => {
     const safe = Math.max(0, value);
-    if (useLog) return logMax > 0 ? Math.log10(safe + 1) / logMax : 0;
     return safe / maxValue;
   };
 
@@ -644,7 +642,7 @@ function renderTrendChart(content) {
     .join('');
   const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
     const y = padding.top + innerHeight - innerHeight * ratio;
-    const value = useLog ? Math.pow(10, ratio * logMax) - 1 : maxValue * ratio;
+    const value = maxValue * ratio;
     return `
       <line class="chart-grid" x1="${padding.left}" y1="${y}" x2="${padding.left + innerWidth}" y2="${y}"></line>
       <text class="chart-label" x="${padding.left - 10}" y="${y + 4}" text-anchor="end">${compactNumber(value)}</text>
@@ -684,6 +682,249 @@ function renderTrendChart(content) {
       <text class="chart-axis-label" x="16" y="${padding.top + innerHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${padding.top + innerHeight / 2})">${escapeHtml(metricName)}</text>
     </svg>
   `;
+}
+
+function renderTrendChart(content) {
+  const source = trendDailySource(content);
+  const points = trendPointsForPeriod(source.points);
+  setPanelDates(els.trendChart, points.length ? `${shortDate(points[0].key)} - ${shortDate(points[points.length - 1].key)}` : '');
+
+  if (!points.length || !points.some((point) => trendMetricConfigs().some((metric) => metricValue(point, metric.key) > 0))) {
+    els.trendChart.innerHTML = '<div class="chart-empty">No daily performance data yet</div>';
+    return;
+  }
+
+  const metrics = trendMetricConfigs();
+  const activeMetric = state.chartMetric;
+  const width = 860;
+  const height = 292;
+  const padding = { top: 18, right: 18, bottom: 42, left: 60 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(1, ...points.flatMap((point) => metrics.map((metric) => metricValue(point, metric.key))));
+  const slot = innerWidth / points.length;
+  const groupWidth = Math.min(58, slot * 0.78);
+  const gap = Math.max(1.5, Math.min(4, groupWidth * 0.08));
+  const barWidth = Math.max(2, (groupWidth - gap * (metrics.length - 1)) / metrics.length);
+
+  const bars = points.flatMap((point, dayIndex) => metrics.map((metric, metricIndex) => {
+    const value = metricValue(point, metric.key);
+    const barHeight = Math.max(value > 0 ? 2 : 0, (value / maxValue) * innerHeight);
+    const x = padding.left + dayIndex * slot + (slot - groupWidth) / 2 + metricIndex * (barWidth + gap);
+    const y = padding.top + innerHeight - barHeight;
+    const classes = ['chart-bar', 'trend-bar', metric.key, 'chart-click'];
+    if (metric.key === activeMetric) classes.push('active');
+    if (metric.key !== activeMetric) classes.push('muted');
+    return `<rect class="${classes.join(' ')}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="3" role="button" tabindex="0" aria-label="${escapeAttribute(`${point.label}: ${formatNumber(value)} ${metric.label.toLowerCase()}`)}" ${insightAttrs({
+      id: `trend-${metric.key}-${point.key}`,
+      title: `${metric.label} on ${point.label}`,
+      subtitle: source.subtitle,
+      source: source.source,
+      metrics: trendInsightMetrics(point, metric.key)
+    })}></rect>`;
+  })).join('');
+
+  const labelEvery = Math.max(1, Math.ceil(points.length / 8));
+  const labels = points.map((point, index) => (index === 0 || index === points.length - 1 || index % labelEvery === 0)
+    ? `<text class="chart-label" x="${padding.left + index * slot + slot / 2}" y="${height - 12}" text-anchor="middle">${escapeHtml(point.label)}</text>`
+    : '').join('');
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const y = padding.top + innerHeight - innerHeight * ratio;
+    return `
+      <line class="chart-grid" x1="${padding.left}" y1="${y}" x2="${padding.left + innerWidth}" y2="${y}"></line>
+      <text class="chart-label" x="${padding.left - 10}" y="${y + 4}" text-anchor="end">${compactNumber(maxValue * ratio)}</text>
+    `;
+  }).join('');
+
+  els.trendChart.innerHTML = `
+    <div class="chart-legend">
+      ${metrics.map((metric) => `<span><i class="legend-bar ${metric.key}"></i>${escapeHtml(metric.label)}</span>`).join('')}
+    </div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily account views, reach and interactions">
+      ${gridLines}
+      ${bars}
+      ${labels}
+      <text class="chart-axis-label" x="${padding.left + innerWidth / 2}" y="${height - 1}" text-anchor="middle">Day</text>
+      <text class="chart-axis-label" x="16" y="${padding.top + innerHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${padding.top + innerHeight / 2})">Account metrics</text>
+    </svg>
+    <p class="chart-note">${escapeHtml(source.note)}</p>
+  `;
+}
+
+function trendMetricConfigs() {
+  return [
+    { key: 'views', label: 'Views' },
+    { key: 'reach', label: 'Reach' },
+    { key: 'interactions', label: 'Interactions' }
+  ];
+}
+
+function trendDailySource(content) {
+  const accountPoints = trendAccountDailyPoints();
+  if (accountPoints.length) {
+    return {
+      type: 'account',
+      points: accountPoints,
+      subtitle: 'Account activity in this Meta insight day',
+      note: 'Day-wise Instagram account totals from Graph API. Product split uses media_product_type when Meta returns it.',
+      source: 'Graph API /insights period=day metric_type=total_value, using exact Meta daily bucket windows. This is day-wise account activity, not publish-date grouping.'
+    };
+  }
+
+  return {
+    type: 'content',
+    points: trendContentDailyPoints(content),
+    subtitle: 'Fallback grouped by publish date',
+    note: 'Fallback: loaded media totals grouped by publish date because account daily performance is unavailable.',
+    source: 'Fallback from loaded media insights grouped by publish date.'
+  };
+}
+
+function trendAccountDailyPoints() {
+  const daily = state.data?.accountInsights?.dailyPerformance;
+  if (!daily?.available || !Array.isArray(daily.series)) return [];
+  return daily.series
+    .map((point) => ({
+      key: point.date,
+      label: shortDate(point.date),
+      metrics: {
+        views: metricNumber(point.metrics?.views, 0),
+        reach: metricNumber(point.metrics?.reach, 0),
+        interactions: metricNumber(point.metrics?.interactions, 0),
+        likes: metricNumber(point.metrics?.likes, 0),
+        comments: metricNumber(point.metrics?.comments, 0),
+        shares: metricNumber(point.metrics?.shares, 0),
+        saves: metricNumber(point.metrics?.saves, 0),
+        profileViews: metricNumber(point.metrics?.profileViews, 0)
+      },
+      byProduct: point.byProduct || {}
+    }))
+    .filter((point) => point.key);
+}
+
+function trendContentDailyPoints(content) {
+  const datedContent = content
+    .map((item) => ({ item, date: new Date(item.timestamp) }))
+    .filter(({ date }) => Number.isFinite(date.getTime()));
+  const today = startOfDay(new Date());
+  const days = state.period === 'all' ? 30 : Number(state.period);
+  const earliest = state.period === 'all' && datedContent.length
+    ? startOfDay(new Date(Math.min(...datedContent.map(({ date }) => date.getTime()))))
+    : startOfDay(new Date(Date.now() - (days - 1) * 86400000));
+  const totalDays = Math.max(1, Math.round((today.getTime() - earliest.getTime()) / 86400000) + 1);
+  const stepDays = state.period === 'all' && totalDays > 60 ? Math.ceil(totalDays / 60) : 1;
+  const buckets = [];
+
+  for (let offset = 0; offset < totalDays; offset += stepDays) {
+    const date = new Date(earliest);
+    date.setDate(earliest.getDate() + offset);
+    const end = new Date(date);
+    end.setDate(date.getDate() + stepDays);
+    buckets.push({
+      key: dayKey(date),
+      label: shortDate(dayKey(date)),
+      start: date,
+      end,
+      metrics: { views: 0, reach: 0, interactions: 0, likes: 0, comments: 0, shares: 0, saves: 0, profileViews: 0 },
+      byProduct: {}
+    });
+  }
+
+  for (const { item, date } of datedContent) {
+    const bucket = buckets.find((entry) => date >= entry.start && date < entry.end);
+    if (!bucket) continue;
+    const product = productKeyForContent(item);
+    if (!bucket.byProduct[product]) bucket.byProduct[product] = {};
+    ['views', 'reach', 'interactions', 'likes', 'comments', 'shares', 'saves'].forEach((metric) => {
+      const value = metricNumber(item[metric], 0);
+      bucket.metrics[metric] += value;
+      bucket.byProduct[product][metric] = metricNumber(bucket.byProduct[product][metric], 0) + value;
+    });
+  }
+
+  return buckets;
+}
+
+function trendPointsForPeriod(points) {
+  const sorted = points.slice().sort((a, b) => a.key.localeCompare(b.key));
+  if (state.period === 'all' || !sorted.length) return sorted;
+
+  const days = Number(state.period);
+  const latest = parseKey(sorted[sorted.length - 1].key);
+  if (!Number.isFinite(latest.getTime())) return sorted;
+  const earliest = new Date(latest);
+  earliest.setDate(latest.getDate() - (days - 1));
+  const earliestKey = dayKey(earliest);
+  return sorted.filter((point) => point.key >= earliestKey);
+}
+
+function metricValue(point, metric) {
+  return metricNumber(point.metrics?.[metric], 0);
+}
+
+function trendInsightMetrics(point, activeMetric) {
+  const metrics = trendMetricConfigs().map((metric) => ({
+    label: metric.label,
+    value: formatNumber(metricValue(point, metric.key))
+  }));
+  const extraMetrics = [
+    ['Likes', point.metrics?.likes],
+    ['Comments', point.metrics?.comments],
+    ['Shares', point.metrics?.shares],
+    ['Saves', point.metrics?.saves],
+    ['Profile views', point.metrics?.profileViews]
+  ].filter(([, value]) => metricNumber(value, 0) > 0);
+
+  metrics.push(...extraMetrics.map(([label, value]) => ({ label, value: formatNumber(metricNumber(value, 0)) })));
+
+  const productRows = productBreakdownRows(point.byProduct, activeMetric);
+  if (productRows.length) {
+    metrics.push(...productRows.map((row) => ({
+      label: `${row.label} ${metricTitle(activeMetric).toLowerCase()}`,
+      value: formatNumber(row.value)
+    })));
+  } else {
+    metrics.push({ label: 'Product split', value: 'Unavailable' });
+  }
+
+  return metrics;
+}
+
+function productBreakdownRows(byProduct, metric) {
+  return Object.entries(byProduct || {})
+    .map(([key, values]) => ({
+      key,
+      label: productTypeLabel(key),
+      value: metricNumber(values?.[metric], 0)
+    }))
+    .filter((row) => row.value !== 0)
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+}
+
+function productKeyForContent(item) {
+  const product = String(item.productType || '').toUpperCase();
+  if (product === 'REELS') return 'REEL';
+  if (product === 'STORY') return 'STORY';
+  if (product === 'FEED') return 'POST';
+  if (product) return product;
+  if (item.contentType === 'reel') return 'REEL';
+  if (item.contentType === 'story') return 'STORY';
+  return 'POST';
+}
+
+function productTypeLabel(key) {
+  const normalized = String(key || '').toUpperCase();
+  return {
+    REEL: 'Reels',
+    REELS: 'Reels',
+    POST: 'Posts',
+    FEED: 'Posts',
+    STORY: 'Stories',
+    STORIES: 'Stories',
+    CAROUSEL: 'Carousels',
+    UNKNOWN: 'Unknown'
+  }[normalized] || normalized.toLowerCase().replace(/(^|_)([a-z])/g, (_, space, letter) => `${space ? ' ' : ''}${letter.toUpperCase()}`);
 }
 
 function dayKey(date) {
@@ -825,11 +1066,295 @@ function renderReachChart(content) {
   `;
 }
 
+function reachAccountDailyPoints() {
+  const series = state.data?.accountInsights?.dailyReach;
+  if (!series?.available || !Array.isArray(series.series)) return [];
+  return series.series
+    .map((point) => ({
+      key: point.date,
+      label: shortDate(point.date),
+      value: metricNumber(point.value, null),
+      content: null,
+      endTime: point.endTime || null
+    }))
+    .filter((point) => point.key && point.value !== null);
+}
+
+function reachContentDailyPoints(content) {
+  return content
+    .map((item) => {
+      const date = startOfDay(new Date(item.timestamp));
+      if (!Number.isFinite(date.getTime())) return null;
+      const key = dayKey(date);
+      return {
+        key,
+        label: shortDate(key),
+        value: metricNumber(item.reach, 0),
+        content: 1
+      };
+    })
+    .filter(Boolean);
+}
+
+function reachDailySource(content) {
+  const accountPoints = reachAccountDailyPoints();
+  if (accountPoints.length) {
+    return {
+      type: 'account',
+      points: accountPoints,
+      legend: 'Account reach by day',
+      note: 'Instagram Graph API account reach by day. Dates follow Meta insight buckets.',
+      source: 'Graph API /insights reach period=day time_series. This is account-level reach, not reach grouped by post publish date.'
+    };
+  }
+  return {
+    type: 'content',
+    points: reachContentDailyPoints(content),
+    legend: 'Loaded content fallback',
+    note: 'Fallback: loaded media reach grouped by publish date.',
+    source: 'Fallback from loaded media reach grouped by publish date.'
+  };
+}
+
+function reachPointBounds(points) {
+  const times = points
+    .map((point) => parseKey(point.key).getTime())
+    .filter((time) => Number.isFinite(time));
+  if (!times.length) return null;
+  return {
+    min: startOfDay(new Date(Math.min(...times))),
+    max: startOfDay(new Date(Math.max(...times)))
+  };
+}
+
+function activeAccountReachRange(points) {
+  const bounds = reachPointBounds(points);
+  if (!bounds) return null;
+  if (state.reachRange?.start && state.reachRange?.end) {
+    return { start: startOfDay(parseKey(state.reachRange.start)), end: startOfDay(parseKey(state.reachRange.end)) };
+  }
+  const end = bounds.max;
+  const start = new Date(Math.max(bounds.min.getTime(), end.getTime() - 29 * 86400000));
+  return { start: startOfDay(start), end };
+}
+
+function buildAccountDailyReach(points, range) {
+  if (!range) return [];
+  const buckets = [];
+  const index = new Map();
+  for (let cursor = new Date(range.start); cursor <= range.end; cursor.setDate(cursor.getDate() + 1)) {
+    const key = dayKey(cursor);
+    const bucket = { key, label: shortDate(key), value: 0, content: 0 };
+    buckets.push(bucket);
+    index.set(key, bucket);
+  }
+  for (const point of points) {
+    const bucket = index.get(point.key);
+    if (!bucket) continue;
+    bucket.value += metricNumber(point.value, 0);
+    bucket.content += metricNumber(point.content, 0);
+  }
+  return buckets;
+}
+
+function reachAccountMonthlyPoints() {
+  const monthly = state.data?.accountInsights?.monthlyReach;
+  if (!monthly?.available || !Array.isArray(monthly.series)) return [];
+  return monthly.series
+    .map((point) => ({
+      key: point.key,
+      label: point.label || reachMonthLabel(point.key),
+      value: metricNumber(point.value, null),
+      content: null
+    }))
+    .filter((point) => point.key && point.value !== null);
+}
+
+function reachContentMonthlyPoints(content) {
+  const grouped = new Map();
+  for (const item of content) {
+    const date = new Date(item.timestamp);
+    if (!Number.isFinite(date.getTime())) continue;
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const current = grouped.get(key) || { key, label: reachMonthLabel(key), value: 0, content: 0 };
+    current.value += metricNumber(item.reach, 0);
+    current.content += 1;
+    grouped.set(key, current);
+  }
+  return [...grouped.values()].sort((a, b) => a.key.localeCompare(b.key)).slice(-12);
+}
+
+function reachMonthlySource(content) {
+  const accountPoints = reachAccountMonthlyPoints();
+  if (accountPoints.length) {
+    return {
+      type: 'account',
+      points: accountPoints,
+      legend: 'Account reach by month',
+      note: 'Instagram Graph API reach total for each calendar month.',
+      source: 'Graph API /insights reach period=day total_value for each calendar month. This avoids summing daily reach across repeat accounts.'
+    };
+  }
+  return {
+    type: 'content',
+    points: reachContentMonthlyPoints(content),
+    legend: 'Loaded content fallback',
+    note: 'Fallback: loaded media reach grouped by publish month.',
+    source: 'Fallback from loaded media reach grouped by publish month.'
+  };
+}
+
+function updateAccountReachRangeLabel(range) {
+  if (!els.reachRangeLabel) return;
+  const monthly = state.reachGranularity === 'month';
+  if (els.reachRangeTrigger) {
+    els.reachRangeTrigger.disabled = monthly;
+    els.reachRangeTrigger.setAttribute('aria-expanded', 'false');
+  }
+  if (monthly) {
+    toggleReachCalendar(false);
+    els.reachRangeLabel.textContent = 'Last 12 months';
+    return;
+  }
+  if (!range) {
+    els.reachRangeLabel.textContent = 'No data';
+    return;
+  }
+  els.reachRangeLabel.textContent = state.reachRange?.start
+    ? `${shortDate(dayKey(range.start))} - ${shortDate(dayKey(range.end))}`
+    : 'Last 30 days';
+}
+
+function renderAccountReachChart(content) {
+  if (state.reachGranularity === 'month') {
+    renderAccountMonthlyReachChart(content);
+    return;
+  }
+  renderAccountDailyReachChart(content);
+}
+
+function renderAccountDailyReachChart(content) {
+  const source = reachDailySource(content);
+  const range = activeAccountReachRange(source.points);
+  updateAccountReachRangeLabel(range);
+  if (els.reachTitle) els.reachTitle.textContent = 'Reach by day';
+
+  if (!range) {
+    els.reachChart.innerHTML = '<div class="chart-empty">No reach data yet</div>';
+    return;
+  }
+
+  const buckets = buildAccountDailyReach(source.points, range);
+  if (!buckets.some((bucket) => bucket.value > 0)) {
+    els.reachChart.innerHTML = '<div class="chart-empty">No reach in this date range</div>';
+    return;
+  }
+
+  renderAccountReachBars(buckets, {
+    mode: 'day',
+    legend: source.legend,
+    note: source.note,
+    source: source.source,
+    sourceType: source.type,
+    axisLabel: 'Day',
+    ariaLabel: 'Reach by day',
+    maxBarWidth: 30,
+    labelCount: 8
+  });
+}
+
+function renderAccountMonthlyReachChart(content) {
+  const source = reachMonthlySource(content);
+  updateAccountReachRangeLabel(null);
+  if (els.reachTitle) els.reachTitle.textContent = 'Reach by month';
+
+  if (!source.points.length) {
+    els.reachChart.innerHTML = '<div class="chart-empty">No monthly reach data yet</div>';
+    return;
+  }
+
+  renderAccountReachBars(source.points, {
+    mode: 'month',
+    legend: source.legend,
+    note: source.note,
+    source: source.source,
+    sourceType: source.type,
+    axisLabel: 'Month',
+    ariaLabel: 'Reach by month',
+    maxBarWidth: 44,
+    labelCount: 12
+  });
+}
+
+function renderAccountReachBars(buckets, options) {
+  const max = Math.max(1, ...buckets.map((bucket) => bucket.value));
+  const width = 860;
+  const height = 280;
+  const padding = { top: 18, right: 18, bottom: 42, left: 60 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const slot = innerWidth / buckets.length;
+  const barWidth = Math.max(2, Math.min(options.maxBarWidth || 30, slot * 0.72));
+
+  const bars = buckets.map((bucket, indexNo) => {
+    const barHeight = Math.max(bucket.value > 0 ? 2 : 0, (bucket.value / max) * innerHeight);
+    const x = padding.left + indexNo * slot + (slot - barWidth) / 2;
+    const y = padding.top + innerHeight - barHeight;
+    const metrics = [{ label: 'Reach', value: compactNumber(bucket.value) }];
+    if (options.sourceType === 'content') {
+      metrics.push({ label: 'Items published', value: formatNumber(bucket.content) });
+    }
+    const subtitle = options.sourceType === 'content'
+      ? `${formatNumber(bucket.content)} item${bucket.content === 1 ? '' : 's'} published`
+      : 'Account reach reported by Instagram';
+    const title = options.mode === 'month' ? `Reach in ${bucket.label}` : `Reach on ${bucket.label}`;
+    return `<rect class="chart-bar reach-bar chart-click" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="3" role="button" tabindex="0" aria-label="${escapeAttribute(`${bucket.label}: ${formatNumber(bucket.value)} reach`)}" ${insightAttrs({
+      id: `reach-${options.mode}-${bucket.key}`,
+      title,
+      subtitle,
+      source: options.source,
+      metrics
+    })}></rect>`;
+  }).join('');
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const y = padding.top + innerHeight - innerHeight * ratio;
+    return `
+      <line class="chart-grid" x1="${padding.left}" y1="${y}" x2="${padding.left + innerWidth}" y2="${y}"></line>
+      <text class="chart-label" x="${padding.left - 10}" y="${y + 4}" text-anchor="end">${compactNumber(max * ratio)}</text>
+    `;
+  }).join('');
+
+  const labelEvery = Math.max(1, Math.ceil(buckets.length / (options.labelCount || 8)));
+  const labels = buckets.map((bucket, indexNo) => (indexNo === 0 || indexNo === buckets.length - 1 || indexNo % labelEvery === 0)
+    ? `<text class="chart-label" x="${padding.left + indexNo * slot + slot / 2}" y="${height - 12}" text-anchor="middle">${escapeHtml(bucket.label)}</text>`
+    : '').join('');
+
+  els.reachChart.innerHTML = `
+    <div class="chart-legend">
+      <span><i class="legend-bar reach"></i>${escapeHtml(options.legend)}</span>
+    </div>
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttribute(options.ariaLabel)}">
+      ${gridLines}
+      ${bars}
+      ${labels}
+      <text class="chart-axis-label" x="${padding.left + innerWidth / 2}" y="${height - 1}" text-anchor="middle">${escapeHtml(options.axisLabel)}</text>
+      <text class="chart-axis-label" x="16" y="${padding.top + innerHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${padding.top + innerHeight / 2})">Reach</text>
+    </svg>
+    <p class="chart-note">${escapeHtml(options.note)}</p>
+  `;
+}
+
 function toggleReachCalendar(force) {
   if (!els.reachCalendar) return;
+  if (state.reachGranularity === 'month') {
+    els.reachCalendar.setAttribute('hidden', '');
+    els.reachRangeTrigger?.setAttribute('aria-expanded', 'false');
+    return;
+  }
   const shouldOpen = typeof force === 'boolean' ? force : els.reachCalendar.hasAttribute('hidden');
   if (shouldOpen) {
-    const range = activeReachRange(chartContent());
+    const range = activeAccountReachRange(reachDailySource(chartContent()).points);
     const base = range ? range.end : new Date();
     state.reachCal = { view: new Date(base.getFullYear(), base.getMonth(), 1), pendingStart: null };
     renderReachCalendar();
@@ -868,15 +1393,10 @@ function renderReachCalendar() {
   const lead = new Date(year, month, 1).getDay();
   const todayKey = dayKey(new Date());
 
-  const content = chartContent();
-  const dataDays = new Set(content
-    .map((item) => {
-      const date = new Date(item.timestamp);
-      return Number.isFinite(date.getTime()) ? dayKey(date) : null;
-    })
-    .filter(Boolean));
+  const source = reachDailySource(chartContent());
+  const dataDays = new Set(source.points.map((point) => point.key).filter(Boolean));
 
-  const active = activeReachRange(content);
+  const active = activeAccountReachRange(source.points);
   const rangeStart = cal.pendingStart || (active && dayKey(active.start));
   const rangeEnd = cal.pendingStart ? null : (active && dayKey(active.end));
 
@@ -2407,6 +2927,13 @@ function shortDate(value) {
     month: 'short',
     day: 'numeric'
   }).format(new Date(`${value}T00:00:00`));
+}
+
+function reachMonthLabel(value) {
+  return new Intl.DateTimeFormat('en', {
+    month: 'short',
+    year: 'numeric'
+  }).format(new Date(`${value}-01T00:00:00`));
 }
 
 function initials(value) {

@@ -673,6 +673,8 @@ async function fetchAccountInsights(activeConfig) {
     { key: 'all_time', label: 'All time', days: 728 }
   ];
   const METRICS = ['views', 'reach', 'total_interactions', 'accounts_engaged', 'profile_views'];
+  const DAILY_PERFORMANCE_METRICS = ['views', 'reach', 'total_interactions', 'likes', 'comments', 'shares', 'saves', 'profile_views'];
+  const DAILY_PRODUCT_METRICS = ['views', 'reach', 'total_interactions', 'likes', 'comments', 'shares', 'saves'];
 
   // Totals over a window. One combined call; fall back to per-metric so a single
   // unsupported metric never blanks the whole window.
@@ -720,25 +722,145 @@ async function fetchAccountInsights(activeConfig) {
     }
   };
 
+  const dailyReachFor = async (days = 90) => {
+    try {
+      const response = await graphGet(`/${id}/insights`, {
+        metric: 'reach',
+        period: 'day',
+        metric_type: 'time_series',
+        since: nowSec - days * DAY,
+        until: nowSec
+      }, activeConfig);
+      const series = parseInsightTimeSeries(response.data || [], 'reach');
+      return series.length
+        ? { available: true, days, series }
+        : { available: false, reason: 'Meta returned no daily reach rows for this account.' };
+    } catch (error) {
+      return { available: false, reason: error.message || 'Daily reach is unavailable.' };
+    }
+  };
+
+  const monthlyReachFor = async (count = 12) => {
+    const windows = calendarMonthWindows(count);
+    const series = [];
+    await Promise.all(windows.map(async (window) => {
+      try {
+        const response = await graphGet(`/${id}/insights`, {
+          metric: 'reach',
+          period: 'day',
+          metric_type: 'total_value',
+          since: window.since,
+          until: window.until
+        }, activeConfig);
+        const row = (response.data || []).find((item) => item.name === 'reach');
+        const value = row?.total_value?.value;
+        if (typeof value === 'number') {
+          series.push({ ...window, value });
+        }
+      } catch {
+        // Skip a month if Meta declines that specific range.
+      }
+    }));
+    series.sort((a, b) => a.key.localeCompare(b.key));
+    return series.length
+      ? { available: true, months: count, series }
+      : { available: false, reason: 'Meta returned no monthly reach totals for this account.' };
+  };
+
+  const dailyPerformanceFor = async (dailyReach, days = 30) => {
+    const reachSeries = (dailyReach?.series || [])
+      .filter((point) => point.endTime && point.date)
+      .sort((a, b) => a.endTime.localeCompare(b.endTime));
+
+    if (reachSeries.length < 2) {
+      return { available: false, reason: 'Daily performance needs at least two Meta reach buckets to build exact one-day windows.' };
+    }
+
+    const startIndex = Math.max(1, reachSeries.length - days);
+    const windows = reachSeries.slice(startIndex).map((point, offset) => {
+      const previous = reachSeries[startIndex + offset - 1];
+      return {
+        point,
+        since: Math.floor(new Date(previous.endTime).getTime() / 1000) + 1,
+        until: Math.floor(new Date(point.endTime).getTime() / 1000)
+      };
+    }).filter((window) => Number.isFinite(window.since) && Number.isFinite(window.until) && window.since <= window.until);
+
+    const series = await mapLimit(windows, 4, async ({ point, since, until }) => {
+      try {
+        const [totalsResponse, productResponse] = await Promise.all([
+          graphGet(`/${id}/insights`, {
+            metric: DAILY_PERFORMANCE_METRICS.join(','),
+            period: 'day',
+            metric_type: 'total_value',
+            since,
+            until
+          }, activeConfig),
+          graphGet(`/${id}/insights`, {
+            metric: DAILY_PRODUCT_METRICS.join(','),
+            period: 'day',
+            metric_type: 'total_value',
+            breakdown: 'media_product_type',
+            since,
+            until
+          }, activeConfig)
+        ]);
+
+        const rawTotals = parseInsightTotals(totalsResponse.data || []);
+        const metrics = normalizeAccountMetrics(rawTotals);
+        if (typeof rawTotals.reach !== 'number') metrics.reach = toNumber(point.value, 0);
+
+        return {
+          date: point.date,
+          endTime: point.endTime,
+          since,
+          until,
+          metrics,
+          byProduct: parseProductMetricBreakdowns(productResponse.data || [])
+        };
+      } catch {
+        return null;
+      }
+    });
+
+    const cleanSeries = series
+      .filter(Boolean)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    return cleanSeries.length
+      ? { available: true, days, series: cleanSeries }
+      : { available: false, reason: 'Meta returned no daily account performance totals for this account.' };
+  };
+
   try {
     const byWindow = {};
     const reachByFollowType = {};
-    await Promise.all(WINDOWS.map(async (w) => {
+    const windowTask = Promise.all(WINDOWS.map(async (w) => {
       const range = { since: nowSec - w.days * DAY, until: nowSec };
       const [totals, followType] = await Promise.all([totalsFor(range), followTypeFor(range)]);
       if (Object.keys(totals).length) byWindow[w.key] = totals;
       if (Object.keys(followType).length) reachByFollowType[w.key] = followType;
     }));
+    const dailyReachTask = dailyReachFor(90);
+    const monthlyReachTask = monthlyReachFor(12);
+
+    await windowTask;
+    const dailyReach = await dailyReachTask;
+    const dailyPerformanceTask = dailyPerformanceFor(dailyReach, 30);
+    const [dailyPerformance, monthlyReach] = await Promise.all([dailyPerformanceTask, monthlyReachTask]);
 
     const windows = WINDOWS.filter((w) => byWindow[w.key]);
     const defaultWindow = (windows.find((w) => w.key === 'last_30_days') || windows[windows.length - 1])?.key || null;
-    const result = windows.length
+    const result = windows.length || dailyReach.available || monthlyReach.available || dailyPerformance.available
       ? {
         available: true,
         windows: windows.map((w) => ({ key: w.key, label: w.label })),
         defaultWindow,
         byWindow,
-        reachByFollowType
+        reachByFollowType,
+        dailyPerformance,
+        dailyReach,
+        monthlyReach
       }
       : { available: false, reason: 'Account-level insights are unavailable for this account or API version.' };
 
@@ -768,6 +890,97 @@ function timeframeRange(timeframe) {
     case 'prev_month': return { since: startOfMonth(-1), until: startOfMonth(0) };
     default: return { since: now - 30 * DAY, until: now };
   }
+}
+
+function parseInsightTimeSeries(data, metric) {
+  const row = (data || []).find((item) => item.name === metric);
+  return (row?.values || [])
+    .map((point) => {
+      const endTime = typeof point.end_time === 'string' ? point.end_time : '';
+      const date = endTime.slice(0, 10);
+      return {
+        date,
+        value: toNumber(point.value, null),
+        endTime: endTime || null
+      };
+    })
+    .filter((point) => point.date && point.value !== null);
+}
+
+function calendarMonthWindows(count) {
+  const now = new Date();
+  return Array.from({ length: count }, (_, index) => {
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (count - 1 - index), 1));
+    const next = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1));
+    const untilDate = index === count - 1 ? now : next;
+    const key = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, '0')}`;
+    return {
+      key,
+      label: new Intl.DateTimeFormat('en', { month: 'short', year: 'numeric', timeZone: 'UTC' }).format(start),
+      since: Math.floor(start.getTime() / 1000),
+      until: Math.floor(untilDate.getTime() / 1000)
+    };
+  });
+}
+
+async function mapLimit(items, limit, mapper) {
+  const results = new Array(items.length);
+  let index = 0;
+  const workerCount = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (index < items.length) {
+      const currentIndex = index;
+      index += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  }));
+  return results;
+}
+
+function accountMetricKey(metric) {
+  switch (metric) {
+    case 'total_interactions': return 'interactions';
+    case 'profile_views': return 'profileViews';
+    case 'accounts_engaged': return 'accountsEngaged';
+    default: return metric;
+  }
+}
+
+function parseInsightTotals(data) {
+  const totals = {};
+  for (const row of data || []) {
+    const value = row.total_value?.value;
+    if (typeof value === 'number') totals[row.name] = value;
+  }
+  return totals;
+}
+
+function normalizeAccountMetrics(totals) {
+  return {
+    views: toNumber(totals.views, 0),
+    reach: toNumber(totals.reach, 0),
+    interactions: toNumber(totals.total_interactions, 0),
+    likes: toNumber(totals.likes, 0),
+    comments: toNumber(totals.comments, 0),
+    shares: toNumber(totals.shares, 0),
+    saves: toNumber(totals.saves, 0),
+    profileViews: toNumber(totals.profile_views, 0),
+    accountsEngaged: toNumber(totals.accounts_engaged, 0)
+  };
+}
+
+function parseProductMetricBreakdowns(data) {
+  const byProduct = {};
+  for (const row of data || []) {
+    const metric = accountMetricKey(row.name);
+    const results = row.total_value?.breakdowns?.[0]?.results || [];
+    for (const result of results) {
+      const product = String(result.dimension_values?.[0] || 'UNKNOWN').toUpperCase();
+      if (!byProduct[product]) byProduct[product] = {};
+      byProduct[product][metric] = toNumber(result.value, 0);
+    }
+  }
+  return byProduct;
 }
 
 // Flatten Graph API total_value breakdown results into a { dimension: value } map.
