@@ -150,10 +150,12 @@
                   <button type="button" data-metric="reach">Reach</button>
                   <button type="button" data-metric="interactions">Interactions</button>
                 </div>
-                <div class="segmented" id="period-tabs" role="tablist" aria-label="Date range">
-                  <button type="button" data-period="14">14D</button>
-                  <button type="button" data-period="30">30D</button>
-                  <button class="active" type="button" data-period="all">All</button>
+                <div class="range-control">
+                  <button class="secondary-button small-button range-trigger" id="performance-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="performance-calendar">
+                    <span id="performance-range-label">All available</span>
+                    <span class="range-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div class="calendar-pop" id="performance-calendar" role="dialog" aria-label="Select performance date range" hidden></div>
                 </div>
               </div>
             </div>
@@ -319,6 +321,13 @@
               <div>
                 <p class="section-label">Follower growth</p>
                 <h2 id="aud-followers-title">Followers over time</h2>
+              </div>
+              <div class="range-control">
+                <button class="secondary-button small-button range-trigger" id="follower-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="follower-calendar">
+                  <span id="follower-range-label">All available</span>
+                  <span class="range-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="calendar-pop" id="follower-calendar" role="dialog" aria-label="Select follower date range" hidden></div>
               </div>
             </div>
             <div id="follower-growth">

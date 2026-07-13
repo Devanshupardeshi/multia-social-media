@@ -14,8 +14,12 @@ const state = {
   minViews: 0,
   query: '',
   isRefreshing: false,
+  performanceRange: null,
+  performanceCal: null,
   reachRange: null,
   reachCal: null,
+  followerRange: null,
+  followerCal: null,
   audienceTimeframe: null,
   accountWindow: null,
   usernameHidden: false
@@ -36,6 +40,9 @@ const els = {
   trendChart: document.querySelector('#trend-chart'),
   periodTabs: document.querySelector('#period-tabs'),
   metricTabs: document.querySelector('#metric-tabs'),
+  performanceRangeTrigger: document.querySelector('#performance-range-trigger'),
+  performanceRangeLabel: document.querySelector('#performance-range-label'),
+  performanceCalendar: document.querySelector('#performance-calendar'),
   reachGranularityTabs: document.querySelector('#reach-granularity-tabs'),
   funnelChart: document.querySelector('#funnel-chart'),
   savesSharesChart: document.querySelector('#saves-shares-chart'),
@@ -63,6 +70,9 @@ const els = {
   accuracyCenter: document.querySelector('#accuracy-center'),
   followerPanel: document.querySelector('#follower-panel'),
   followerGrowth: document.querySelector('#follower-growth'),
+  followerRangeTrigger: document.querySelector('#follower-range-trigger'),
+  followerRangeLabel: document.querySelector('#follower-range-label'),
+  followerCalendar: document.querySelector('#follower-calendar'),
   genderBreakdown: document.querySelector('#gender-breakdown'),
   genderTimeframe: document.querySelector('#gender-timeframe'),
   genderTimeframeLabel: document.querySelector('#gender-timeframe-label'),
@@ -113,7 +123,7 @@ function bindEvents() {
     if (state.data) renderReport(); // keep the Creator Summary text in sync immediately
   });
 
-  els.periodTabs.addEventListener('click', (event) => {
+  els.periodTabs?.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-period]');
     if (!button) return;
 
@@ -148,6 +158,29 @@ function bindEvents() {
     renderCharts();
   });
 
+  els.performanceRangeTrigger?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    togglePerformanceCalendar();
+  });
+
+  els.performanceCalendar?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const nav = event.target.closest('[data-performance-cal-nav]');
+    if (nav && state.performanceCal) {
+      state.performanceCal.view = new Date(state.performanceCal.view.getFullYear(), state.performanceCal.view.getMonth() + Number(nav.dataset.performanceCalNav), 1);
+      renderPerformanceCalendar();
+      return;
+    }
+    if (event.target.closest('[data-performance-cal-all]')) {
+      state.performanceRange = null;
+      togglePerformanceCalendar(false);
+      renderCharts();
+      return;
+    }
+    const dayBtn = event.target.closest('[data-performance-cal-day]');
+    if (dayBtn) pickPerformanceDay(dayBtn.dataset.performanceCalDay);
+  });
+
   els.reachRangeTrigger?.addEventListener('click', (event) => {
     event.stopPropagation();
     toggleReachCalendar();
@@ -171,33 +204,52 @@ function bindEvents() {
     if (dayBtn) pickReachDay(dayBtn.dataset.calDay);
   });
 
-  document.addEventListener('click', (event) => {
-    if (!els.reachCalendar || els.reachCalendar.hasAttribute('hidden')) return;
-    if (event.target.closest('.range-control')) return;
-    toggleReachCalendar(false);
+  els.followerRangeTrigger?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleFollowerCalendar();
   });
 
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && els.reachCalendar && !els.reachCalendar.hasAttribute('hidden')) {
+  els.followerCalendar?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const nav = event.target.closest('[data-follower-cal-nav]');
+    if (nav && state.followerCal) {
+      state.followerCal.view = new Date(state.followerCal.view.getFullYear(), state.followerCal.view.getMonth() + Number(nav.dataset.followerCalNav), 1);
+      renderFollowerCalendar();
+      return;
+    }
+    if (event.target.closest('[data-follower-cal-all]')) {
+      state.followerRange = null;
+      toggleFollowerCalendar(false);
+      renderFollowerGrowth();
+      return;
+    }
+    const dayBtn = event.target.closest('[data-follower-cal-day]');
+    if (dayBtn) pickFollowerDay(dayBtn.dataset.followerCalDay);
+  });
+
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('.range-control')) return;
+    if (els.performanceCalendar && !els.performanceCalendar.hasAttribute('hidden')) {
+      togglePerformanceCalendar(false);
+    }
+    if (els.reachCalendar && !els.reachCalendar.hasAttribute('hidden')) {
       toggleReachCalendar(false);
+    }
+    if (els.followerCalendar && !els.followerCalendar.hasAttribute('hidden')) {
+      toggleFollowerCalendar(false);
     }
   });
 
-  document.querySelector('.analytics-grid')?.addEventListener('click', (event) => {
-    const target = event.target.closest('[data-insight]');
-    if (!target) return;
-
-    setSelectedInsight(target);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (els.performanceCalendar && !els.performanceCalendar.hasAttribute('hidden')) togglePerformanceCalendar(false);
+      if (els.reachCalendar && !els.reachCalendar.hasAttribute('hidden')) toggleReachCalendar(false);
+      if (els.followerCalendar && !els.followerCalendar.hasAttribute('hidden')) toggleFollowerCalendar(false);
+    }
   });
 
-  document.querySelector('.analytics-grid')?.addEventListener('keydown', (event) => {
-    if (!['Enter', ' '].includes(event.key)) return;
-    const target = event.target.closest('[data-insight]');
-    if (!target) return;
-
-    event.preventDefault();
-    setSelectedInsight(target);
-  });
+  bindInsightSelection(document.querySelector('.analytics-grid'));
+  bindInsightSelection(document.querySelector('.audience-grid'));
 
   els.searchInput.addEventListener('input', () => {
     state.query = els.searchInput.value.trim().toLowerCase();
@@ -552,6 +604,24 @@ function setSelectedInsight(target) {
   markSelectedInsight();
 }
 
+function bindInsightSelection(container) {
+  if (!container) return;
+  container.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-insight]');
+    if (!target || !container.contains(target)) return;
+    setSelectedInsight(target);
+  });
+
+  container.addEventListener('keydown', (event) => {
+    if (!['Enter', ' '].includes(event.key)) return;
+    const target = event.target.closest('[data-insight]');
+    if (!target || !container.contains(target)) return;
+
+    event.preventDefault();
+    setSelectedInsight(target);
+  });
+}
+
 function renderSelectedInsight() {
   const targets = document.querySelectorAll('.chart-insight');
   if (!targets.length) return;
@@ -686,7 +756,9 @@ function renderLegacyTrendChart(content) {
 
 function renderTrendChart(content) {
   const source = trendDailySource(content);
-  const points = trendPointsForPeriod(source.points);
+  const range = activePerformanceRange(source.points);
+  updatePerformanceRangeLabel(range);
+  const points = performancePointsForRange(source.points, range);
   setPanelDates(els.trendChart, points.length ? `${shortDate(points[0].key)} - ${shortDate(points[points.length - 1].key)}` : '');
 
   if (!points.length || !points.some((point) => trendMetricConfigs().some((metric) => metricValue(point, metric.key) > 0))) {
@@ -857,6 +929,131 @@ function trendPointsForPeriod(points) {
   earliest.setDate(latest.getDate() - (days - 1));
   const earliestKey = dayKey(earliest);
   return sorted.filter((point) => point.key >= earliestKey);
+}
+
+function pointDateBounds(points) {
+  const times = points
+    .map((point) => parseKey(point.key).getTime())
+    .filter((time) => Number.isFinite(time));
+  if (!times.length) return null;
+  return {
+    min: startOfDay(new Date(Math.min(...times))),
+    max: startOfDay(new Date(Math.max(...times)))
+  };
+}
+
+function activePerformanceRange(points) {
+  const bounds = pointDateBounds(points);
+  if (!bounds) return null;
+  if (state.performanceRange?.start && state.performanceRange?.end) {
+    return { start: startOfDay(parseKey(state.performanceRange.start)), end: startOfDay(parseKey(state.performanceRange.end)) };
+  }
+  return { start: bounds.min, end: bounds.max };
+}
+
+function performancePointsForRange(points, range) {
+  if (!range) return [];
+  const startKey = dayKey(range.start);
+  const endKey = dayKey(range.end);
+  return points
+    .slice()
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .filter((point) => point.key >= startKey && point.key <= endKey);
+}
+
+function updatePerformanceRangeLabel(range) {
+  if (!els.performanceRangeLabel) return;
+  if (!range) {
+    els.performanceRangeLabel.textContent = 'No data';
+    return;
+  }
+  els.performanceRangeLabel.textContent = state.performanceRange?.start
+    ? `${shortDate(dayKey(range.start))} - ${shortDate(dayKey(range.end))}`
+    : 'All available';
+}
+
+function togglePerformanceCalendar(force) {
+  if (!els.performanceCalendar) return;
+  const shouldOpen = typeof force === 'boolean' ? force : els.performanceCalendar.hasAttribute('hidden');
+  if (shouldOpen) {
+    toggleReachCalendar(false);
+    toggleFollowerCalendar(false);
+    const range = activePerformanceRange(trendDailySource(chartContent()).points);
+    const base = range ? range.end : new Date();
+    state.performanceCal = { view: new Date(base.getFullYear(), base.getMonth(), 1), pendingStart: null };
+    renderPerformanceCalendar();
+    els.performanceCalendar.removeAttribute('hidden');
+    els.performanceRangeTrigger?.setAttribute('aria-expanded', 'true');
+  } else {
+    els.performanceCalendar.setAttribute('hidden', '');
+    els.performanceRangeTrigger?.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function pickPerformanceDay(key) {
+  const cal = state.performanceCal;
+  if (!cal) return;
+  if (!cal.pendingStart) {
+    cal.pendingStart = key;
+    renderPerformanceCalendar();
+    return;
+  }
+  state.performanceRange = cal.pendingStart <= key
+    ? { start: cal.pendingStart, end: key }
+    : { start: key, end: cal.pendingStart };
+  cal.pendingStart = null;
+  togglePerformanceCalendar(false);
+  renderCharts();
+}
+
+function renderPerformanceCalendar() {
+  const cal = state.performanceCal;
+  if (!cal) return;
+
+  const view = cal.view;
+  const year = view.getFullYear();
+  const month = view.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const lead = new Date(year, month, 1).getDay();
+  const todayKey = dayKey(new Date());
+
+  const source = trendDailySource(chartContent());
+  const dataDays = new Set(source.points.map((point) => point.key).filter(Boolean));
+  const active = activePerformanceRange(source.points);
+  const rangeStart = cal.pendingStart || (active && dayKey(active.start));
+  const rangeEnd = cal.pendingStart ? null : (active && dayKey(active.end));
+
+  const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month, 1));
+  const blanks = Array.from({ length: lead }, () => '<span class="cal-blank"></span>').join('');
+  const cells = Array.from({ length: daysInMonth }, (_, indexNo) => {
+    const day = indexNo + 1;
+    const key = dayKey(new Date(year, month, day));
+    const classes = ['cal-day'];
+    if (rangeStart && rangeEnd && key >= rangeStart && key <= rangeEnd) classes.push('in-range');
+    if (key === rangeStart) classes.push('is-start');
+    if (key === rangeEnd) classes.push('is-end');
+    if (key === todayKey) classes.push('is-today');
+    if (dataDays.has(key)) classes.push('has-data');
+    return `<button class="${classes.join(' ')}" type="button" data-performance-cal-day="${key}">${day}</button>`;
+  }).join('');
+
+  const selection = cal.pendingStart
+    ? `From ${shortDate(cal.pendingStart)} - pick an end day`
+    : (active ? `${shortDate(dayKey(active.start))} - ${shortDate(dayKey(active.end))}` : 'Pick a start day');
+
+  els.performanceCalendar.innerHTML = `
+    <div class="cal-head">
+      <button class="cal-nav" type="button" data-performance-cal-nav="-1" aria-label="Previous month">&lt;</button>
+      <strong>${escapeHtml(monthLabel)}</strong>
+      <button class="cal-nav" type="button" data-performance-cal-nav="1" aria-label="Next month">&gt;</button>
+    </div>
+    <div class="cal-grid cal-weekdays"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>
+    <div class="cal-grid cal-days">${blanks}${cells}</div>
+    <div class="cal-foot">
+      <span class="cal-selection">${escapeHtml(selection)}</span>
+      <button class="cal-reset" type="button" data-performance-cal-all>All available</button>
+    </div>
+  `;
 }
 
 function metricValue(point, metric) {
@@ -1133,9 +1330,7 @@ function activeAccountReachRange(points) {
   if (state.reachRange?.start && state.reachRange?.end) {
     return { start: startOfDay(parseKey(state.reachRange.start)), end: startOfDay(parseKey(state.reachRange.end)) };
   }
-  const end = bounds.max;
-  const start = new Date(Math.max(bounds.min.getTime(), end.getTime() - 29 * 86400000));
-  return { start: startOfDay(start), end };
+  return { start: bounds.min, end: bounds.max };
 }
 
 function buildAccountDailyReach(points, range) {
@@ -1222,7 +1417,7 @@ function updateAccountReachRangeLabel(range) {
   }
   els.reachRangeLabel.textContent = state.reachRange?.start
     ? `${shortDate(dayKey(range.start))} - ${shortDate(dayKey(range.end))}`
-    : 'Last 30 days';
+    : 'All available';
 }
 
 function renderAccountReachChart(content) {
@@ -1354,6 +1549,8 @@ function toggleReachCalendar(force) {
   }
   const shouldOpen = typeof force === 'boolean' ? force : els.reachCalendar.hasAttribute('hidden');
   if (shouldOpen) {
+    togglePerformanceCalendar(false);
+    toggleFollowerCalendar(false);
     const range = activeAccountReachRange(reachDailySource(chartContent()).points);
     const base = range ? range.end : new Date();
     state.reachCal = { view: new Date(base.getFullYear(), base.getMonth(), 1), pendingStart: null };
@@ -1428,7 +1625,7 @@ function renderReachCalendar() {
     <div class="cal-grid cal-days">${blanks}${cells}</div>
     <div class="cal-foot">
       <span class="cal-selection">${escapeHtml(selection)}</span>
-      <button class="cal-reset" type="button" data-cal-reset>Reset</button>
+      <button class="cal-reset" type="button" data-cal-reset>All available</button>
     </div>
   `;
 }
@@ -1593,7 +1790,7 @@ function renderSavesSharesChart(content) {
 
 function renderHeatmapChart(content) {
   const slots = buildPostingSlots(content);
-  const max = Math.max(1, ...slots.map((slot) => slot.averageViews));
+  const max = Math.max(1, ...slots.map((slot) => metricNumber(slot.averageViews, 0)));
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const windows = [
     { label: 'Night', time: '00-06' },
@@ -1603,33 +1800,70 @@ function renderHeatmapChart(content) {
   ];
 
   els.heatmapChart.innerHTML = `
-    <div class="chart-note">Cell value is average views</div>
+    <div class="chart-note">Average views by publish time. Counts show loaded content.</div>
     <div class="heatmap">
       <span></span>
       ${windows.map((window) => `<b><span>${escapeHtml(window.label)}</span><small>${escapeHtml(window.time)}</small></b>`).join('')}
       ${days.map((day, dayIndex) => `
         <b>${day}</b>
         ${windows.map((window, windowIndex) => {
-          const slot = slots.find((item) => item.day === dayIndex && item.window === windowIndex) || { count: 0, averageViews: 0 };
-          const opacity = slot.count ? 0.18 + (slot.averageViews / max) * 0.72 : 0.08;
-          const title = `${day} ${window.label}: ${compactNumber(slot.averageViews)} average views from ${slot.count} posts`;
-          return `<button class="heat-cell chart-click" type="button" style="--heat: ${opacity}" title="${escapeAttribute(title)}" ${insightAttrs({
+          const slot = slots.find((item) => item.day === dayIndex && item.window === windowIndex) || emptyPostingSlot(dayIndex, windowIndex);
+          const hasContent = slot.contentCount > 0;
+          const hasViews = slot.viewsCount > 0;
+          const averageViews = metricNumber(slot.averageViews, 0);
+          const opacity = hasViews ? 0.18 + (averageViews / max) * 0.72 : (hasContent ? 0.12 : 0.08);
+          const classes = ['heat-cell', 'chart-click'];
+          if (!hasContent) classes.push('empty');
+          if (hasContent && !hasViews) classes.push('is-unavailable');
+          const title = heatmapTitle(day, window.label, slot);
+          return `<button class="${classes.join(' ')}" type="button" style="--heat: ${opacity}" title="${escapeAttribute(title)}" ${insightAttrs({
             id: `heat-${dayIndex}-${windowIndex}`,
             title: `${day} ${window.label}`,
             subtitle: window.time,
-            source: 'Average views calculated from loaded posts published in this day/time slot.',
-            metrics: [
-              { label: 'Average views', value: slot.count ? compactNumber(slot.averageViews) : 'No posts' },
-              { label: 'Posts', value: formatNumber(slot.count) }
-            ]
+            source: 'Average views calculated from loaded content published in this day/time slot. Items without view data are counted separately, not averaged as zero.',
+            metrics: heatmapInsightMetrics(slot)
           })}>
-            <strong>${slot.count ? compactNumber(slot.averageViews) : '-'}</strong>
-            <small>${slot.count ? `${slot.count} posts` : 'no posts'}</small>
+            <strong>${escapeHtml(heatmapValueLabel(slot))}</strong>
+            <small>${escapeHtml(hasContent ? pluralLabel(slot.contentCount, 'item') : 'no content')}</small>
           </button>`;
         }).join('')}
       `).join('')}
     </div>
   `;
+}
+
+function emptyPostingSlot(day, window) {
+  return { day, window, count: 0, contentCount: 0, viewsCount: 0, views: 0, averageViews: null };
+}
+
+function heatmapValueLabel(slot) {
+  if (!slot.contentCount) return '-';
+  if (!slot.viewsCount) return 'No data';
+  const averageViews = metricNumber(slot.averageViews, 0);
+  return averageViews === 0 ? '0 views' : compactNumber(averageViews);
+}
+
+function heatmapTitle(day, windowLabel, slot) {
+  if (!slot.contentCount) return `${day} ${windowLabel}: no content published`;
+  if (!slot.viewsCount) {
+    return `${day} ${windowLabel}: ${pluralLabel(slot.contentCount, 'item')} published, views unavailable`;
+  }
+  const unavailable = slot.contentCount - slot.viewsCount;
+  const suffix = unavailable > 0 ? `; ${pluralLabel(unavailable, 'item')} without view data` : '';
+  return `${day} ${windowLabel}: ${compactNumber(slot.averageViews)} average views from ${pluralLabel(slot.viewsCount, 'item')}${suffix}`;
+}
+
+function heatmapInsightMetrics(slot) {
+  const metrics = [
+    { label: 'Average views', value: slot.viewsCount ? compactNumber(slot.averageViews) : (slot.contentCount ? 'Views unavailable' : 'No content') },
+    { label: 'Content', value: pluralLabel(slot.contentCount, 'item') }
+  ];
+  if (slot.contentCount) {
+    metrics.push({ label: 'With view data', value: pluralLabel(slot.viewsCount, 'item') });
+    const unavailable = slot.contentCount - slot.viewsCount;
+    if (unavailable > 0) metrics.push({ label: 'Missing views', value: pluralLabel(unavailable, 'item') });
+  }
+  return metrics;
 }
 
 function renderScatterChart(content) {
@@ -1971,7 +2205,7 @@ function renderAccountInsights() {
   els.accountInsights.innerHTML = `${tileHtml}${splitHtml}${note}`;
 }
 
-function renderFollowerGrowth() {
+function renderLegacyFollowerGrowth() {
   const account = state.data.account;
   const trend = state.data.summary.followerTrend || { available: false, dayNet: 0, weekNet: 0, series: [] };
   const series = trend.series || [];
@@ -2023,6 +2257,281 @@ function renderFollowerGrowth() {
     </div>
     <div class="fg-spark">${spark}</div>
     <p class="panel-footnote">Net change from daily follower snapshots. Instagram never reveals who followed or unfollowed - only aggregate counts.</p>
+  `;
+}
+
+function renderFollowerGrowth() {
+  const account = state.data.account;
+  const trend = state.data.summary.followerTrend || { available: false, dayNet: 0, weekNet: 0, series: [] };
+  const rawSeries = trend.series || [];
+  const range = activeFollowerRange(rawSeries);
+  updateFollowerRangeLabel(range);
+  const series = followerSeriesForRange(rawSeries, range);
+  const stats = followerRangeStats(series);
+  const lastPoint = series[series.length - 1] || null;
+  const rangeLabel = series.length
+    ? `${shortDate(series[0].date)} - ${shortDate(series[series.length - 1].date)}`
+    : 'No range';
+  const sourceLabel = trend.source === 'graph-api'
+    ? 'Graph API daily follower movement'
+    : 'Demo follower movement';
+
+  const chip = (label, value, note) => {
+    const cls = value > 0 ? 'up' : value < 0 ? 'down' : 'flat';
+    return `<div class="net-chip ${cls}"><span>${escapeHtml(label)}</span><strong>${signedCompact(value)}</strong>${note ? `<small>${escapeHtml(note)}</small>` : ''}</div>`;
+  };
+
+  const chart = trend.available && series.length >= 2
+    ? renderFollowerMovementChart(series)
+    : `<p class="panel-footnote">${escapeHtml(trend.reason || 'Follower movement chart needs daily Graph API follower rows.')}</p>`;
+
+  els.followerGrowth.innerHTML = `
+    <div class="fg-top">
+      <div class="fg-hero">
+        <span class="fg-label">Current followers</span>
+        <strong class="fg-value">${compactNumber(account.followers)}</strong>
+        <span class="fg-exact">${formatNumber(account.followers)} total - ${formatNumber(account.follows)} following</span>
+      </div>
+      <div class="fg-nets">
+        ${chip('Net latest day', stats.dayNet, lastPoint ? shortDate(lastPoint.date) : '')}
+        ${chip('Net 7 days', stats.weekNet, `${formatNumber(stats.gainedWeek)} gained / ${formatNumber(stats.lostWeek)} lost`)}
+        ${chip('Net range', stats.rangeNet, rangeLabel)}
+      </div>
+    </div>
+    <div class="fg-summary">
+      <div><span>Gained</span><strong>${formatNumber(stats.totalGained)}</strong><small>${escapeHtml(rangeLabel)}</small></div>
+      <div><span>Lost</span><strong>${formatNumber(stats.totalLost)}</strong><small>unfollows / lost accounts</small></div>
+      <div><span>Chart source</span><strong>${escapeHtml(sourceLabel)}</strong><small>${trend.estimatedTotals ? 'Follower total line is estimated from current total + daily net' : 'Follower total is demo data'}</small></div>
+    </div>
+    <div class="fg-spark">${chart}</div>
+    <p class="panel-footnote">Graph API provides daily new followers and aggregate follow/unfollow counts. It does not reveal individual users, and historical total followers are estimated from current followers plus daily net movement.</p>
+  `;
+}
+
+function renderFollowerMovementChart(series) {
+  const width = 760;
+  const height = 188;
+  const padding = { top: 18, right: 16, bottom: 30, left: 44 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const barZoneTop = padding.top + 58;
+  const barZoneHeight = innerHeight - 58;
+  const mid = barZoneTop + barZoneHeight / 2;
+  const maxMovement = Math.max(1, ...series.flatMap((point) => [metricNumber(point.gained, 0), metricNumber(point.lost, 0), Math.abs(metricNumber(point.net, 0))]));
+  const followerValues = series.map((point) => metricNumber(point.followers, null)).filter((value) => value !== null);
+  const minFollowers = Math.min(...followerValues);
+  const maxFollowers = Math.max(...followerValues);
+  const followerSpan = Math.max(1, maxFollowers - minFollowers);
+  const slot = innerWidth / series.length;
+  const barWidth = Math.max(2, Math.min(12, slot * 0.52));
+
+  const movementBars = series.map((point, index) => {
+    const x = padding.left + index * slot + (slot - barWidth) / 2;
+    const gainedHeight = Math.max(point.gained > 0 ? 1 : 0, (metricNumber(point.gained, 0) / maxMovement) * (barZoneHeight / 2 - 4));
+    const lostHeight = Math.max(point.lost > 0 ? 1 : 0, (metricNumber(point.lost, 0) / maxMovement) * (barZoneHeight / 2 - 4));
+    const label = `${shortDate(point.date)}: ${formatNumber(point.gained)} gained, ${formatNumber(point.lost)} lost, ${signedCompact(point.net)} net`;
+    const metrics = followerPointMetrics(point);
+    return `
+      <rect class="fg-bar gained chart-click" x="${x.toFixed(1)}" y="${(mid - gainedHeight).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${gainedHeight.toFixed(1)}" rx="2" role="button" tabindex="0" aria-label="${escapeAttribute(`${shortDate(point.date)}: ${formatNumber(point.gained)} followers gained`)}" ${insightAttrs({
+        id: `followers-gained-${point.date}`,
+        title: `Followers gained on ${shortDate(point.date)}`,
+        subtitle: 'Daily Graph API follower movement',
+        source: 'Graph API follower_count period=day time_series. Lost/unfollowed count comes from follows_and_unfollows follow_type breakdown.',
+        metrics
+      })}><title>${escapeHtml(label)}</title></rect>
+      <rect class="fg-bar lost chart-click" x="${x.toFixed(1)}" y="${mid.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${lostHeight.toFixed(1)}" rx="2" role="button" tabindex="0" aria-label="${escapeAttribute(`${shortDate(point.date)}: ${formatNumber(point.lost)} followers lost`)}" ${insightAttrs({
+        id: `followers-lost-${point.date}`,
+        title: `Followers lost on ${shortDate(point.date)}`,
+        subtitle: 'Daily Graph API follower movement',
+        source: 'Graph API follows_and_unfollows period=day total_value, breakdown=follow_type. Instagram does not reveal individual users.',
+        metrics
+      })}><title>${escapeHtml(label)}</title></rect>
+    `;
+  }).join('');
+
+  const linePointModels = series.map((point, index) => {
+    const x = padding.left + index * slot + slot / 2;
+    const value = metricNumber(point.followers, minFollowers);
+    const y = padding.top + 4 + (1 - ((value - minFollowers) / followerSpan)) * 48;
+    return { point, x, y, value };
+  });
+  const linePoints = linePointModels.map((model) => `${model.x.toFixed(1)},${model.y.toFixed(1)}`).join(' ');
+  const totalDots = linePointModels.map(({ point, x, y, value }) => `<circle class="fg-point chart-click" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.4" role="button" tabindex="0" aria-label="${escapeAttribute(`${shortDate(point.date)}: ${formatNumber(value)} estimated followers`)}" ${insightAttrs({
+    id: `followers-total-${point.date}`,
+    title: `Estimated followers on ${shortDate(point.date)}`,
+    subtitle: 'Estimated historical follower total',
+    source: 'Instagram Graph API gives current followers and daily follower movement. Historical totals are estimated backward from current followers using daily net change.',
+    metrics: followerPointMetrics(point)
+  })}><title>${escapeHtml(`${shortDate(point.date)}: ${formatNumber(value)} estimated followers`)}</title></circle>`).join('');
+
+  const labelEvery = Math.max(1, Math.ceil(series.length / 6));
+  const labels = series.map((point, index) => (index === 0 || index === series.length - 1 || index % labelEvery === 0)
+    ? `<text class="chart-label" x="${(padding.left + index * slot + slot / 2).toFixed(1)}" y="${height - 10}" text-anchor="middle">${escapeHtml(shortDate(point.date))}</text>`
+    : '').join('');
+
+  return `
+    <div class="fg-legend">
+      <span><i class="followers"></i>Estimated followers</span>
+      <span><i class="gained"></i>Gained</span>
+      <span><i class="lost"></i>Lost</span>
+    </div>
+    <svg class="fg-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Follower growth with gained and lost followers">
+      <line class="net-axis" x1="${padding.left}" y1="${mid}" x2="${padding.left + innerWidth}" y2="${mid}"></line>
+      <text class="chart-label" x="${padding.left - 8}" y="${padding.top + 10}" text-anchor="end">${compactNumber(maxFollowers)}</text>
+      <text class="chart-label" x="${padding.left - 8}" y="${padding.top + 56}" text-anchor="end">${compactNumber(minFollowers)}</text>
+      ${movementBars}
+      <polyline class="fg-line" points="${linePoints}"></polyline>
+      ${totalDots}
+      ${labels}
+    </svg>
+  `;
+}
+
+function followerPointMetrics(point) {
+  return [
+    { label: 'Estimated followers', value: formatNumber(point.followers) },
+    { label: 'Gained', value: formatNumber(point.gained) },
+    { label: 'Lost', value: formatNumber(point.lost) },
+    { label: 'Net change', value: signedCompact(point.net) }
+  ];
+}
+
+function followerDateBounds(series) {
+  const times = series
+    .map((point) => parseKey(point.date).getTime())
+    .filter((time) => Number.isFinite(time));
+  if (!times.length) return null;
+  return {
+    min: startOfDay(new Date(Math.min(...times))),
+    max: startOfDay(new Date(Math.max(...times)))
+  };
+}
+
+function activeFollowerRange(series) {
+  const bounds = followerDateBounds(series);
+  if (!bounds) return null;
+  if (state.followerRange?.start && state.followerRange?.end) {
+    return { start: startOfDay(parseKey(state.followerRange.start)), end: startOfDay(parseKey(state.followerRange.end)) };
+  }
+  return { start: bounds.min, end: bounds.max };
+}
+
+function followerSeriesForRange(series, range) {
+  if (!range) return [];
+  const startKey = dayKey(range.start);
+  const endKey = dayKey(range.end);
+  return series
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .filter((point) => point.date >= startKey && point.date <= endKey);
+}
+
+function followerRangeStats(series) {
+  const week = series.slice(-7);
+  const totalGained = series.reduce((sum, point) => sum + metricNumber(point.gained, 0), 0);
+  const totalLost = series.reduce((sum, point) => sum + metricNumber(point.lost, 0), 0);
+  return {
+    dayNet: metricNumber(series[series.length - 1]?.net, 0),
+    weekNet: week.reduce((sum, point) => sum + metricNumber(point.net, 0), 0),
+    gainedWeek: week.reduce((sum, point) => sum + metricNumber(point.gained, 0), 0),
+    lostWeek: week.reduce((sum, point) => sum + metricNumber(point.lost, 0), 0),
+    totalGained,
+    totalLost,
+    rangeNet: totalGained - totalLost
+  };
+}
+
+function updateFollowerRangeLabel(range) {
+  if (!els.followerRangeLabel) return;
+  if (!range) {
+    els.followerRangeLabel.textContent = 'No data';
+    return;
+  }
+  els.followerRangeLabel.textContent = state.followerRange?.start
+    ? `${shortDate(dayKey(range.start))} - ${shortDate(dayKey(range.end))}`
+    : 'All available';
+}
+
+function toggleFollowerCalendar(force) {
+  if (!els.followerCalendar) return;
+  const shouldOpen = typeof force === 'boolean' ? force : els.followerCalendar.hasAttribute('hidden');
+  if (shouldOpen) {
+    togglePerformanceCalendar(false);
+    toggleReachCalendar(false);
+    const range = activeFollowerRange(state.data?.summary?.followerTrend?.series || []);
+    const base = range ? range.end : new Date();
+    state.followerCal = { view: new Date(base.getFullYear(), base.getMonth(), 1), pendingStart: null };
+    renderFollowerCalendar();
+    els.followerCalendar.removeAttribute('hidden');
+    els.followerRangeTrigger?.setAttribute('aria-expanded', 'true');
+  } else {
+    els.followerCalendar.setAttribute('hidden', '');
+    els.followerRangeTrigger?.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function pickFollowerDay(key) {
+  const cal = state.followerCal;
+  if (!cal) return;
+  if (!cal.pendingStart) {
+    cal.pendingStart = key;
+    renderFollowerCalendar();
+    return;
+  }
+  state.followerRange = cal.pendingStart <= key
+    ? { start: cal.pendingStart, end: key }
+    : { start: key, end: cal.pendingStart };
+  cal.pendingStart = null;
+  toggleFollowerCalendar(false);
+  renderFollowerGrowth();
+}
+
+function renderFollowerCalendar() {
+  const cal = state.followerCal;
+  if (!cal) return;
+
+  const view = cal.view;
+  const year = view.getFullYear();
+  const month = view.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const lead = new Date(year, month, 1).getDay();
+  const todayKey = dayKey(new Date());
+  const series = state.data?.summary?.followerTrend?.series || [];
+  const dataDays = new Set(series.map((point) => point.date).filter(Boolean));
+  const active = activeFollowerRange(series);
+  const rangeStart = cal.pendingStart || (active && dayKey(active.start));
+  const rangeEnd = cal.pendingStart ? null : (active && dayKey(active.end));
+
+  const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month, 1));
+  const blanks = Array.from({ length: lead }, () => '<span class="cal-blank"></span>').join('');
+  const cells = Array.from({ length: daysInMonth }, (_, indexNo) => {
+    const day = indexNo + 1;
+    const key = dayKey(new Date(year, month, day));
+    const classes = ['cal-day'];
+    if (rangeStart && rangeEnd && key >= rangeStart && key <= rangeEnd) classes.push('in-range');
+    if (key === rangeStart) classes.push('is-start');
+    if (key === rangeEnd) classes.push('is-end');
+    if (key === todayKey) classes.push('is-today');
+    if (dataDays.has(key)) classes.push('has-data');
+    return `<button class="${classes.join(' ')}" type="button" data-follower-cal-day="${key}">${day}</button>`;
+  }).join('');
+
+  const selection = cal.pendingStart
+    ? `From ${shortDate(cal.pendingStart)} - pick an end day`
+    : (active ? `${shortDate(dayKey(active.start))} - ${shortDate(dayKey(active.end))}` : 'Pick a start day');
+
+  els.followerCalendar.innerHTML = `
+    <div class="cal-head">
+      <button class="cal-nav" type="button" data-follower-cal-nav="-1" aria-label="Previous month">&lt;</button>
+      <strong>${escapeHtml(monthLabel)}</strong>
+      <button class="cal-nav" type="button" data-follower-cal-nav="1" aria-label="Next month">&gt;</button>
+    </div>
+    <div class="cal-grid cal-weekdays"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>
+    <div class="cal-grid cal-days">${blanks}${cells}</div>
+    <div class="cal-foot">
+      <span class="cal-selection">${escapeHtml(selection)}</span>
+      <button class="cal-reset" type="button" data-follower-cal-all>All available</button>
+    </div>
   `;
 }
 
@@ -2607,13 +3116,11 @@ function buildPostingSlots(content) {
   const slots = [];
   for (let day = 0; day < 7; day += 1) {
     for (let window = 0; window < 4; window += 1) {
-      slots.push({ day, window, count: 0, views: 0, averageViews: 0 });
+      slots.push(emptyPostingSlot(day, window));
     }
   }
 
   content.forEach((item) => {
-    if (!isMetricKnown(item.views)) return;
-
     const date = new Date(item.timestamp);
     if (!Number.isFinite(date.getTime())) return;
 
@@ -2622,9 +3129,13 @@ function buildPostingSlots(content) {
     const slot = slots.find((entry) => entry.day === day && entry.window === window);
     if (!slot) return;
 
-    slot.count += 1;
+    slot.contentCount += 1;
+    slot.count = slot.contentCount;
+    if (!isMetricKnown(item.views)) return;
+
+    slot.viewsCount += 1;
     slot.views += metricNumber(item.views);
-    slot.averageViews = Math.round(slot.views / slot.count);
+    slot.averageViews = Math.round(slot.views / slot.viewsCount);
   });
 
   return slots;
@@ -2634,11 +3145,12 @@ function bestPostingSlot(content) {
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const windows = ['00:00-06:00', '06:00-12:00', '12:00-18:00', '18:00-24:00'];
   const slot = buildPostingSlots(content)
-    .filter((entry) => entry.count > 0)
-    .sort((a, b) => b.averageViews - a.averageViews || b.count - a.count)[0];
+    .filter((entry) => entry.viewsCount > 0)
+    .sort((a, b) => b.averageViews - a.averageViews || b.viewsCount - a.viewsCount)[0];
 
   return slot ? {
     ...slot,
+    count: slot.contentCount,
     label: `${days[slot.day]} ${windows[slot.window]}`
   } : null;
 }
@@ -2880,6 +3392,10 @@ function closestRefreshOption(value) {
 
 function formatNumber(value) {
   return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(value || 0);
+}
+
+function pluralLabel(count, singular, plural = `${singular}s`) {
+  return `${formatNumber(count)} ${count === 1 ? singular : plural}`;
 }
 
 function compactNumber(value) {

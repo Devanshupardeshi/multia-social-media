@@ -96,6 +96,9 @@ let cachedAudienceId = '';
 let cachedAccountInsights = null;
 let cachedAccountInsightsUntil = 0;
 let cachedAccountInsightsId = '';
+let cachedFollowerGrowth = null;
+let cachedFollowerGrowthUntil = 0;
+let cachedFollowerGrowthId = '';
 const demoState = createDemoState();
 
 export async function handleRequest(req, res) {
@@ -531,9 +534,10 @@ async function getGraphDashboardData({ limit = 500, allMedia = true } = {}, acti
     activeConfig
   });
   previousContentMetrics = new Map(dashboard.content.map((item) => [item.id, pickComparableMetrics(item)]));
-  [dashboard.audience, dashboard.accountInsights] = await Promise.all([
+  [dashboard.audience, dashboard.accountInsights, dashboard.summary.followerTrend] = await Promise.all([
     fetchAudience(activeConfig),
-    fetchAccountInsights(activeConfig)
+    fetchAccountInsights(activeConfig),
+    fetchFollowerGrowth(activeConfig, dashboard.account)
   ]);
 
   // Persist the snapshot composeDashboard just updated (via trackDailyMetrics).
@@ -675,6 +679,7 @@ async function fetchAccountInsights(activeConfig) {
   const METRICS = ['views', 'reach', 'total_interactions', 'accounts_engaged', 'profile_views'];
   const DAILY_PERFORMANCE_METRICS = ['views', 'reach', 'total_interactions', 'likes', 'comments', 'shares', 'saves', 'profile_views'];
   const DAILY_PRODUCT_METRICS = ['views', 'reach', 'total_interactions', 'likes', 'comments', 'shares', 'saves'];
+  const DAILY_HISTORY_DAYS = 90;
 
   // Totals over a window. One combined call; fall back to per-metric so a single
   // unsupported metric never blanks the whole window.
@@ -767,7 +772,7 @@ async function fetchAccountInsights(activeConfig) {
       : { available: false, reason: 'Meta returned no monthly reach totals for this account.' };
   };
 
-  const dailyPerformanceFor = async (dailyReach, days = 30) => {
+  const dailyPerformanceFor = async (dailyReach, days = 90) => {
     const reachSeries = (dailyReach?.series || [])
       .filter((point) => point.endTime && point.date)
       .sort((a, b) => a.endTime.localeCompare(b.endTime));
@@ -841,12 +846,12 @@ async function fetchAccountInsights(activeConfig) {
       if (Object.keys(totals).length) byWindow[w.key] = totals;
       if (Object.keys(followType).length) reachByFollowType[w.key] = followType;
     }));
-    const dailyReachTask = dailyReachFor(90);
+    const dailyReachTask = dailyReachFor(DAILY_HISTORY_DAYS + 1);
     const monthlyReachTask = monthlyReachFor(12);
 
     await windowTask;
     const dailyReach = await dailyReachTask;
-    const dailyPerformanceTask = dailyPerformanceFor(dailyReach, 30);
+    const dailyPerformanceTask = dailyPerformanceFor(dailyReach, DAILY_HISTORY_DAYS);
     const [dailyPerformance, monthlyReach] = await Promise.all([dailyPerformanceTask, monthlyReachTask]);
 
     const windows = WINDOWS.filter((w) => byWindow[w.key]);
@@ -870,6 +875,117 @@ async function fetchAccountInsights(activeConfig) {
     return result;
   } catch (error) {
     return { available: false, reason: error.message || 'Account-level insights are unavailable.' };
+  }
+}
+
+async function fetchFollowerGrowth(activeConfig, account, days = 90) {
+  const now = Date.now();
+  if (cachedFollowerGrowth && cachedFollowerGrowthUntil > now && cachedFollowerGrowthId === activeConfig.instagramUserId) {
+    return cachedFollowerGrowth;
+  }
+
+  const id = activeConfig.instagramUserId;
+  const DAY = 86400;
+  const nowSec = Math.floor(now / 1000);
+
+  try {
+    const followerResponse = await graphGet(`/${id}/insights`, {
+      metric: 'follower_count',
+      period: 'day',
+      metric_type: 'time_series',
+      since: nowSec - (days + 1) * DAY,
+      until: nowSec
+    }, activeConfig);
+
+    const rows = parseInsightTimeSeries(followerResponse.data || [], 'follower_count')
+      .filter((point) => point.endTime && point.date)
+      .sort((a, b) => a.endTime.localeCompare(b.endTime));
+
+    if (rows.length < 2) {
+      return { available: false, source: 'graph-api', reason: 'Meta returned too few follower_count rows for a daily follower chart.', dayNet: 0, weekNet: 0, series: [] };
+    }
+
+    const startIndex = Math.max(1, rows.length - days);
+    const windows = rows.slice(startIndex).map((point, offset) => {
+      const previous = rows[startIndex + offset - 1];
+      return {
+        point,
+        since: Math.floor(new Date(previous.endTime).getTime() / 1000) + 1,
+        until: Math.floor(new Date(point.endTime).getTime() / 1000)
+      };
+    }).filter((window) => Number.isFinite(window.since) && Number.isFinite(window.until) && window.since <= window.until);
+
+    const movementRows = await mapLimit(windows, 4, async ({ point, since, until }) => {
+      let split = {};
+      try {
+        const response = await graphGet(`/${id}/insights`, {
+          metric: 'follows_and_unfollows',
+          period: 'day',
+          metric_type: 'total_value',
+          breakdown: 'follow_type',
+          since,
+          until
+        }, activeConfig);
+        split = parseDemographic(response.data || []);
+      } catch {
+        split = {};
+      }
+
+      const gained = toNumber(point.value, 0);
+      const lost = toNumber(split.NON_FOLLOWER, 0);
+      return {
+        date: point.date,
+        endTime: point.endTime,
+        gained,
+        lost,
+        net: gained - lost,
+        followers: null
+      };
+    });
+
+    const series = movementRows
+      .filter(Boolean)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    if (!series.length) {
+      return { available: false, source: 'graph-api', reason: 'Meta returned no daily follower movement rows.', dayNet: 0, weekNet: 0, series: [] };
+    }
+
+    let runningFollowers = toNumber(account.followers, 0);
+    for (let index = series.length - 1; index >= 0; index -= 1) {
+      series[index].followers = runningFollowers;
+      runningFollowers -= series[index].net;
+    }
+
+    const dayNet = series[series.length - 1]?.net || 0;
+    const week = series.slice(-7);
+    const weekNet = week.reduce((sum, point) => sum + point.net, 0);
+    const gainedWeek = week.reduce((sum, point) => sum + point.gained, 0);
+    const lostWeek = week.reduce((sum, point) => sum + point.lost, 0);
+    const totalGained = series.reduce((sum, point) => sum + point.gained, 0);
+    const totalLost = series.reduce((sum, point) => sum + point.lost, 0);
+    const result = {
+      available: true,
+      source: 'graph-api',
+      days,
+      estimatedTotals: true,
+      currentFollowers: toNumber(account.followers, 0),
+      dayNet,
+      weekNet,
+      gainedWeek,
+      lostWeek,
+      totalGained,
+      totalLost,
+      rangeNet: totalGained - totalLost,
+      series
+    };
+
+    cachedFollowerGrowth = result;
+    cachedFollowerGrowthUntil = now + 30 * 60 * 1000;
+    cachedFollowerGrowthId = id;
+    return result;
+  } catch (error) {
+    return { available: false, source: 'graph-api', reason: error.message || 'Daily follower movement is unavailable.', dayNet: 0, weekNet: 0, series: [] };
   }
 }
 
@@ -1663,8 +1779,8 @@ function trackDailyMetrics(totals) {
   };
 }
 
-// Net follower change over time from the stored daily snapshots (aggregate only -
-// Instagram never exposes which users followed or unfollowed).
+// Demo trend only. Connected accounts replace this with Graph API follower_count
+// and follows_and_unfollows data in fetchFollowerGrowth(), without using storage.
 function buildFollowerTrend(account, mode) {
   if (mode !== 'graph-api') {
     // Demo: synthesize a believable 14-day series so the page renders without a token.
@@ -1682,23 +1798,7 @@ function buildFollowerTrend(account, mode) {
     return { available: true, dayNet: series[series.length - 1].net, weekNet, series };
   }
 
-  const dates = Object.keys(metricsHistory).sort();
-  const series = [];
-  let prevFollowers = null;
-  for (const date of dates) {
-    const followers = metricsHistory[date]?.last?.followers;
-    if (typeof followers !== 'number') continue;
-    const at = metricsHistory[date]?.last?.at || null;
-    series.push({ date, at, followers, net: prevFollowers === null ? 0 : followers - prevFollowers });
-    prevFollowers = followers;
-  }
-
-  if (series.length < 2) {
-    return { available: false, dayNet: 0, weekNet: 0, series };
-  }
-  const dayNet = series[series.length - 1].net;
-  const weekNet = series.slice(-7).reduce((sum, point) => sum + point.net, 0);
-  return { available: true, dayNet, weekNet, series };
+  return { available: false, source: 'graph-api', dayNet: 0, weekNet: 0, series: [] };
 }
 
 function buildContentBreakdown(content) {
