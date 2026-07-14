@@ -3022,6 +3022,128 @@ tr:last-child td {
   }
 }
 
+/* Accounts overview - the multi-account landing view at `/`. The body class hides
+   every dashboard section; only the topbar (sans controls) and the cards remain. */
+body.view-overview .main > :not(.topbar):not(.accounts-overview) {
+  display: none;
+}
+
+body.view-overview .toolbar {
+  display: none;
+}
+
+.accounts-overview {
+  margin-bottom: 18px;
+}
+
+.account-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.account-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 180px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.account-card:hover {
+  border-color: var(--primary-dark);
+  transform: translateY(-1px);
+}
+
+.account-card.has-error {
+  border-color: oklch(0.82 0.07 30);
+}
+
+.account-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.account-card-head strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.account-card-head small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.account-card-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.account-card-stats span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 740;
+}
+
+.account-card-stats strong {
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-card-stats small {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 720;
+}
+
+.account-card-stats small.up {
+  color: var(--success);
+}
+
+.account-card-stats small.down {
+  color: var(--danger);
+}
+
+.account-card-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.account-card-cta {
+  margin-top: auto;
+  color: var(--primary-dark);
+  font-size: 0.82rem;
+  font-weight: 740;
+}
+
+.overview-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+}
+
+.back-link {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.back-link:hover {
+  color: var(--primary-dark);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

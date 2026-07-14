@@ -21,6 +21,15 @@
       .status-row strong { font-variant-numeric: tabular-nums; font-size: 0.95rem; }
       .pill-ok { color: var(--primary-dark); }
       .pill-no { color: var(--coral); }
+      .accounts-admin { display: grid; gap: 10px; padding: 14px 16px 16px; }
+      .account-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+      .account-row .avatar { width: 36px; height: 36px; font-size: 0.8rem; }
+      .account-row-name { flex: 1 1 160px; min-width: 0; }
+      .account-row-name strong { display: block; font-size: 0.92rem; }
+      .account-row-name small { color: var(--muted); font-size: 0.75rem; overflow-wrap: anywhere; }
+      .account-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .default-badge { padding: 2px 8px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-dark); font-size: 0.7rem; font-weight: 760; }
+      .accounts-empty { margin: 0; color: var(--muted); font-size: 0.88rem; }
       [hidden] { display: none !important; }
     </style>
   </head>
@@ -69,8 +78,18 @@
           <section class="panel">
             <div class="panel-header compact">
               <div>
+                <p class="section-label">Accounts</p>
+                <h2>Registered accounts</h2>
+              </div>
+            </div>
+            <div class="accounts-admin" id="accounts-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header compact">
+              <div>
                 <p class="section-label">Connection</p>
-                <h2>Token &amp; account</h2>
+                <h2>Add / edit account</h2>
               </div>
             </div>
             <div class="connect-body">
@@ -82,6 +101,10 @@
                 <label class="field-stack">
                   <span>Instagram account ID</span>
                   <input id="ig-user-id-input" name="instagramUserId" inputmode="numeric" placeholder="1784…">
+                </label>
+                <label class="field-stack">
+                  <span>Label (optional)</span>
+                  <input id="label-input" name="label" placeholder="e.g. Brand main">
                 </label>
                 <label class="field-stack">
                   <span>Graph API version</span>
@@ -121,6 +144,6 @@
       </div>
     </div>
 
-    <script src="/admin.js?v=2" type="module"></script>
+    <script src="/admin.js?v=3" type="module"></script>
   </body>
 </html>

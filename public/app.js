@@ -1,5 +1,8 @@
 const state = {
   data: null,
+  accountId: '',
+  accounts: [],
+  defaultAccountId: '',
   pollTimer: null,
   refreshMs: 60000,
   period: 'all',
@@ -27,6 +30,12 @@ const state = {
 
 const els = {
   connectionChip: document.querySelector('#connection-chip'),
+  accountsOverview: document.querySelector('#accounts-overview'),
+  accountCards: document.querySelector('#account-cards'),
+  overviewRefresh: document.querySelector('#overview-refresh'),
+  accountSelect: document.querySelector('#account-select'),
+  accountSelectLabel: document.querySelector('#account-select-label'),
+  allAccountsLink: document.querySelector('#all-accounts-link'),
   accountAvatar: document.querySelector('#account-avatar'),
   accountTitle: document.querySelector('#account-title'),
   toggleUsername: document.querySelector('#toggle-username'),
@@ -97,9 +106,116 @@ async function init() {
   try { state.usernameHidden = localStorage.getItem('multia-hide-username') === '1'; } catch {}
   applyUsernameMask();
   bindEvents();
+
+  state.accountId = new URLSearchParams(location.search).get('account') || '';
+  try {
+    const info = await fetchJson('/api/accounts');
+    state.accounts = info.accounts || [];
+    state.defaultAccountId = info.defaultId || '';
+  } catch {
+    state.accounts = [];
+  }
+  if (state.accountId && !state.accounts.some((account) => account.id === state.accountId)) {
+    state.accountId = ''; // URL names an account that no longer exists
+  }
+
+  // With registered accounts, `/` is the all-accounts overview and `/?account=<id>`
+  // is that account's full dashboard. With none, keep the classic demo dashboard.
+  if (state.accounts.length && !state.accountId) {
+    enterOverview();
+    return;
+  }
+
+  populateAccountSwitcher();
   await loadStatus();
   await refreshNow(true, false); // initial load: show last data, do not force a sync
   connectLiveStream();
+}
+
+// Append the selected account to a data endpoint so every metric stays per-account.
+function withAccount(url) {
+  if (!state.accountId) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}account=${encodeURIComponent(state.accountId)}`;
+}
+
+function populateAccountSwitcher() {
+  if (!state.accounts.length) return;
+  els.allAccountsLink?.classList.remove('hidden');
+  if (state.accounts.length < 2 || !els.accountSelect) return;
+
+  els.accountSelect.innerHTML = state.accounts.map((account) => {
+    const name = account.label || (account.username ? `@${account.username}` : account.id);
+    const selected = account.id === state.accountId ? ' selected' : '';
+    return `<option value="${escapeAttribute(account.id)}"${selected}>${escapeHtml(name)}</option>`;
+  }).join('');
+  els.accountSelectLabel?.classList.remove('hidden');
+}
+
+function enterOverview() {
+  document.body.classList.add('view-overview');
+  els.accountsOverview?.classList.remove('hidden');
+  els.accountAvatar.textContent = 'IG';
+  els.accountTitle.textContent = 'All accounts';
+  els.accountMeta.textContent = `${state.accounts.length} registered account${state.accounts.length === 1 ? '' : 's'}`;
+  updateConnection('connected', 'Graph API');
+  loadOverview();
+}
+
+async function loadOverview() {
+  els.accountCards.innerHTML = state.accounts
+    .map(() => '<article class="account-card skeleton"></article>')
+    .join('');
+  try {
+    const summary = await fetchJson('/api/accounts/summary');
+    renderAccountCards(summary.accounts || []);
+  } catch (error) {
+    els.accountCards.innerHTML = `<p class="overview-empty">${escapeHtml(error.message || 'Unable to load accounts.')}</p>`;
+  }
+}
+
+function renderAccountCards(accounts) {
+  if (!accounts.length) {
+    els.accountCards.innerHTML = '<p class="overview-empty">No accounts registered yet. Add one from the <a href="/admin">admin page</a>.</p>';
+    return;
+  }
+
+  els.accountCards.innerHTML = accounts.map((account) => {
+    const name = account.username ? `@${account.username}` : account.id;
+    const avatar = safeUrl(account.profilePictureUrl)
+      ? `<img src="${escapeAttribute(safeUrl(account.profilePictureUrl))}" alt="" loading="lazy">`
+      : escapeHtml(initials(account.username || 'IG'));
+    const snapshot = account.snapshot;
+    const followers = account.followers ?? snapshot?.followers;
+    const dayNet = snapshot?.followerDayNet;
+    const netBadge = typeof dayNet === 'number' && dayNet !== 0
+      ? `<small class="${dayNet > 0 ? 'up' : 'down'}">${dayNet > 0 ? '+' : ''}${compactNumber(dayNet)} today</small>`
+      : '';
+    const stat = (label, value) => `
+      <div>
+        <span>${label}</span>
+        <strong>${typeof value === 'number' ? compactNumber(value) : '—'}</strong>
+      </div>`;
+
+    return `
+      <a class="account-card${account.error ? ' has-error' : ''}" href="/?account=${escapeAttribute(account.id)}">
+        <div class="account-card-head">
+          <span class="avatar">${avatar}</span>
+          <div>
+            <strong>${escapeHtml(name)}</strong>
+            <small>${escapeHtml(account.label || account.id)}</small>
+          </div>
+        </div>
+        ${account.error
+          ? `<p class="account-card-error">${escapeHtml(account.error)}</p>`
+          : `<div class="account-card-stats">
+              <div><span>Followers</span><strong>${typeof followers === 'number' ? compactNumber(followers) : '—'}</strong>${netBadge}</div>
+              ${stat('Views', snapshot?.views)}
+              ${stat('Reach', snapshot?.reach)}
+              ${stat('Interactions', snapshot?.interactions)}
+            </div>`}
+        <span class="account-card-cta">Open dashboard &rarr;</span>
+      </a>`;
+  }).join('');
 }
 
 function bindEvents() {
@@ -115,6 +231,16 @@ function bindEvents() {
   });
 
   els.manualRefresh.addEventListener('click', () => refreshNow());
+
+  // Switching accounts is a plain navigation: the URL is the source of truth and
+  // every piece of per-account view state resets cleanly.
+  els.accountSelect?.addEventListener('change', () => {
+    if (els.accountSelect.value && els.accountSelect.value !== state.accountId) {
+      location.href = `/?account=${encodeURIComponent(els.accountSelect.value)}`;
+    }
+  });
+
+  els.overviewRefresh?.addEventListener('click', loadOverview);
 
   els.toggleUsername?.addEventListener('click', () => {
     state.usernameHidden = !state.usernameHidden;
@@ -326,7 +452,7 @@ function bindEvents() {
 
 async function loadStatus() {
   try {
-    const status = await fetchJson('/api/status');
+    const status = await fetchJson(withAccount('/api/status'));
     state.refreshMs = status.refreshMs || state.refreshMs;
     els.refreshSelect.value = String(closestRefreshOption(state.refreshMs));
     updateConnection(status.mode === 'graph-api' ? 'connected' : 'demo', status.mode === 'graph-api' ? 'Graph API' : 'Demo mode');
@@ -396,7 +522,7 @@ async function refreshNow(silent = false, force = true) {
   try {
     // Only a button click or the scheduled poll forces a fresh sync (force=1).
     // A plain page load reads the last data without re-syncing.
-    const data = await fetchJson(`/api/instagram?all=1&limit=1000${force ? '&force=1' : ''}`);
+    const data = await fetchJson(withAccount(`/api/instagram?all=1&limit=1000${force ? '&force=1' : ''}`));
     updateData(data);
     updateLiveBadge(data.mode === 'graph-api' ? 'connected' : 'demo', data.mode === 'graph-api' ? 'Live' : 'Demo live');
   } catch (error) {

@@ -7,17 +7,124 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
 const envPath = path.join(__dirname, '.env');
+const configPath = path.join(__dirname, 'config.json');
 
 loadEnv(envPath);
 
 const PORT = toNumber(process.env.PORT, 4173);
-let dashboardConfig = {
-  graphApiVersion: normalizeGraphVersion(process.env.GRAPH_API_VERSION || 'v23.0'),
-  apiMode: normalizeApiMode(process.env.INSTAGRAM_API_MODE || 'auto'),
-  accessToken: process.env.INSTAGRAM_ACCESS_TOKEN || '',
-  instagramUserId: process.env.INSTAGRAM_USER_ID || '',
-  refreshMs: clamp(toNumber(process.env.DASHBOARD_REFRESH_MS, 60000), 15000, 86400000)
-};
+
+// Multi-account config store. Each account keeps its own token/id/API settings;
+// refreshMs is shared. Persisted to Supabase ('config' key) or local config.json;
+// .env is a read-only seed for the first account and is never written back.
+let configStore = loadConfigStore();
+
+function loadConfigStore() {
+  let stored = null;
+  try {
+    if (existsSync(configPath)) stored = JSON.parse(readFileSync(configPath, 'utf8'));
+  } catch {
+    // A corrupt config.json is non-fatal - fall back to the env seed.
+  }
+  if (stored && typeof stored === 'object') return migrateStoredConfig(stored);
+
+  const seed = {
+    refreshMs: clamp(toNumber(process.env.DASHBOARD_REFRESH_MS, 60000), 15000, 86400000),
+    defaultAccountId: '',
+    accounts: []
+  };
+  if (process.env.INSTAGRAM_ACCESS_TOKEN && process.env.INSTAGRAM_USER_ID) {
+    const instagramUserId = sanitizeInstagramUserId(process.env.INSTAGRAM_USER_ID);
+    seed.accounts.push(normalizeStoredAccount({
+      instagramUserId,
+      accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
+      graphApiVersion: process.env.GRAPH_API_VERSION || 'v23.0',
+      apiMode: process.env.INSTAGRAM_API_MODE || 'auto'
+    }));
+    seed.defaultAccountId = instagramUserId;
+  }
+  return seed;
+}
+
+// Accept both the new { accounts: [...] } shape and the legacy single-account shape.
+function migrateStoredConfig(stored) {
+  if (Array.isArray(stored.accounts)) {
+    const accounts = stored.accounts.map(normalizeStoredAccount).filter((account) => account.instagramUserId);
+    return {
+      refreshMs: clamp(toNumber(stored.refreshMs, 60000), 15000, 86400000),
+      defaultAccountId: sanitizeInstagramUserId(stored.defaultAccountId) || accounts[0]?.instagramUserId || '',
+      accounts
+    };
+  }
+  const account = normalizeStoredAccount(stored);
+  const accounts = account.instagramUserId && account.accessToken ? [account] : [];
+  return {
+    refreshMs: clamp(toNumber(stored.refreshMs, 60000), 15000, 86400000),
+    defaultAccountId: accounts[0]?.instagramUserId || '',
+    accounts
+  };
+}
+
+function normalizeStoredAccount(raw = {}) {
+  return {
+    instagramUserId: sanitizeInstagramUserId(raw.instagramUserId),
+    accessToken: normalizeAccessToken(raw.accessToken),
+    username: String(raw.username || ''),
+    label: String(raw.label || ''),
+    profilePictureUrl: String(raw.profilePictureUrl || ''),
+    graphApiVersion: normalizeGraphVersion(raw.graphApiVersion),
+    apiMode: normalizeApiMode(raw.apiMode)
+  };
+}
+
+function getAccount(id = '') {
+  const wanted = sanitizeInstagramUserId(id);
+  const { accounts, defaultAccountId } = configStore;
+  return accounts.find((account) => account.instagramUserId === wanted)
+    || accounts.find((account) => account.instagramUserId === defaultAccountId)
+    || accounts[0]
+    || null;
+}
+
+// Per-request view of one account's connection settings (the shape every graph
+// fetch helper already expects: token + id + version + mode + refreshMs).
+function accountConfig(account) {
+  return account
+    ? { ...account, refreshMs: configStore.refreshMs }
+    : {
+      instagramUserId: '',
+      accessToken: '',
+      username: '',
+      label: '',
+      profilePictureUrl: '',
+      graphApiVersion: 'v23.0',
+      apiMode: 'auto',
+      refreshMs: configStore.refreshMs
+    };
+}
+
+function defaultConfig() {
+  return accountConfig(getAccount());
+}
+
+function accountFromUrl(requestUrl) {
+  return accountConfig(getAccount(requestUrl.searchParams.get('account') || ''));
+}
+
+async function saveConfigStore() {
+  if (supabaseEnabled()) {
+    try {
+      if (await kvSet('config', configStore)) return true;
+    } catch {
+      // fall through to the local file
+    }
+  }
+  try {
+    writeFileSync(configPath, JSON.stringify(configStore, null, 2));
+    return true;
+  } catch {
+    return false; // read-only FS without Supabase: config applies in-memory only
+  }
+}
 
 // Optional Supabase persistence (gives serverless deploys a real store for config +
 // metrics history). Uses the REST API directly - no SDK dependency. When the env vars
@@ -64,10 +171,10 @@ async function ensureConfigLoaded() {
   try {
     const stored = await kvGet('config');
     if (stored && typeof stored === 'object') {
-      dashboardConfig = { ...dashboardConfig, ...stored };
+      configStore = migrateStoredConfig(stored);
     }
   } catch {
-    // Persisted config is best-effort; fall back to env vars.
+    // Persisted config is best-effort; fall back to the env/file seed.
   }
 }
 
@@ -84,21 +191,16 @@ const mimeTypes = new Map([
   ['.ico', 'image/x-icon']
 ]);
 
-let previousContentMetrics = new Map();
+// All server caches are per-account Maps keyed by instagramUserId, so switching
+// accounts in the UI never evicts another account's data.
+const previousContentMetrics = new Map(); // accountId -> Map(mediaId -> comparable metrics)
+const dashboardCache = new Map();         // `${accountId}:${limit}:${all}` -> dashboard payload
+const audienceCache = new Map();          // accountId -> { value, until }
+const accountInsightsCache = new Map();   // accountId -> { value, until }
+const followerGrowthCache = new Map();    // accountId -> { value, until }
+const profileCache = new Map();           // accountId -> { value, until } (overview cards)
 const historyPath = path.join(__dirname, 'metrics-history.json');
-let metricsHistory = loadMetricsHistory();
-let cachedLiveData = null;
-let cachedUntil = 0;
-let cachedKey = '';
-let cachedAudience = null;
-let cachedAudienceUntil = 0;
-let cachedAudienceId = '';
-let cachedAccountInsights = null;
-let cachedAccountInsightsUntil = 0;
-let cachedAccountInsightsId = '';
-let cachedFollowerGrowth = null;
-let cachedFollowerGrowthUntil = 0;
-let cachedFollowerGrowthId = '';
+let metricsHistory = loadMetricsHistory(); // { accountId: { 'YYYY-MM-DD': { first, last } } }
 const demoState = createDemoState();
 
 export async function handleRequest(req, res) {
@@ -106,7 +208,7 @@ export async function handleRequest(req, res) {
     const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
     // Make sure any admin-saved config (incl. the saved refresh interval) is loaded
-    // before any route reads dashboardConfig.
+    // before any route reads the account config store.
     await ensureConfigLoaded();
 
     if (requestUrl.pathname === '/api/admin/login') {
@@ -114,19 +216,32 @@ export async function handleRequest(req, res) {
     }
 
     if (requestUrl.pathname === '/api/health') {
+      const config = defaultConfig();
       return sendJson(res, {
         ok: true,
-        mode: hasCredentials() ? 'graph-api' : 'demo',
-        graphApiVersion: dashboardConfig.graphApiVersion
+        mode: hasCredentials(config) ? 'graph-api' : 'demo',
+        graphApiVersion: config.graphApiVersion
       });
     }
 
     if (requestUrl.pathname === '/api/status') {
-      return sendJson(res, getStatusPayload());
+      return sendJson(res, getStatusPayload(accountFromUrl(requestUrl)));
+    }
+
+    if (requestUrl.pathname === '/api/accounts') {
+      return sendJson(res, getAccountsPayload());
+    }
+
+    if (requestUrl.pathname === '/api/accounts/summary') {
+      return await handleAccountsSummary(res);
     }
 
     if (requestUrl.pathname === '/api/config') {
-      return await handleConfig(req, res);
+      return await handleConfig(req, res, requestUrl);
+    }
+
+    if (requestUrl.pathname === '/api/config/default') {
+      return await handleConfigDefault(req, res);
     }
 
     if (requestUrl.pathname === '/api/config/discover') {
@@ -140,7 +255,12 @@ export async function handleRequest(req, res) {
     if (requestUrl.pathname === '/api/instagram') {
       const limit = clamp(toNumber(requestUrl.searchParams.get('limit'), 500), 5, 2000);
       const allMedia = requestUrl.searchParams.get('all') !== '0';
-      const data = await getDashboardData({ limit, allMedia, force: requestUrl.searchParams.get('force') === '1' });
+      const data = await getDashboardData({
+        limit,
+        allMedia,
+        force: requestUrl.searchParams.get('force') === '1',
+        activeConfig: accountFromUrl(requestUrl)
+      });
       return sendJson(res, data);
     }
 
@@ -191,16 +311,19 @@ function loadEnv(envPath) {
   }
 }
 
-function getStatusPayload() {
+function getStatusPayload(config = defaultConfig()) {
   return {
-    mode: hasCredentials() ? 'graph-api' : 'demo',
-    graphApiVersion: dashboardConfig.graphApiVersion,
-    apiMode: dashboardConfig.apiMode,
-    resolvedGraphHost: resolveGraphHost(dashboardConfig),
-    hasAccessToken: Boolean(dashboardConfig.accessToken),
-    hasInstagramUserId: Boolean(dashboardConfig.instagramUserId),
-    instagramUserId: dashboardConfig.instagramUserId,
-    refreshMs: dashboardConfig.refreshMs,
+    mode: hasCredentials(config) ? 'graph-api' : 'demo',
+    graphApiVersion: config.graphApiVersion,
+    apiMode: config.apiMode,
+    resolvedGraphHost: resolveGraphHost(config),
+    hasAccessToken: Boolean(config.accessToken),
+    hasInstagramUserId: Boolean(config.instagramUserId),
+    instagramUserId: config.instagramUserId,
+    username: config.username || '',
+    accountsCount: configStore.accounts.length,
+    defaultAccountId: configStore.defaultAccountId,
+    refreshMs: configStore.refreshMs,
     serverTime: new Date().toISOString()
   };
 }
@@ -235,32 +358,35 @@ async function handleRefreshInterval(req, res) {
     return sendJson(res, { error: 'Method not allowed' }, 405);
   }
   const body = await readJsonBody(req);
-  const refreshMs = clamp(toNumber(body.refreshMs, dashboardConfig.refreshMs), 15000, 86400000);
-  dashboardConfig = { ...dashboardConfig, refreshMs };
-  process.env.DASHBOARD_REFRESH_MS = String(refreshMs);
-
-  let persisted = false;
-  if (supabaseEnabled()) {
-    try {
-      persisted = await kvSet('config', dashboardConfig);
-    } catch {
-      persisted = false;
-    }
-  }
-  if (!persisted) {
-    try {
-      writeDashboardEnv(dashboardConfig);
-      persisted = true;
-    } catch {
-      persisted = false;
-    }
-  }
+  const refreshMs = clamp(toNumber(body.refreshMs, configStore.refreshMs), 15000, 86400000);
+  configStore = { ...configStore, refreshMs };
+  const persisted = await saveConfigStore();
   return sendJson(res, { ok: true, refreshMs, persisted });
 }
 
-async function handleConfig(req, res) {
+// GET lists accounts (no tokens), POST upserts one account by instagramUserId,
+// DELETE ?id= removes one. POST/DELETE need the admin password.
+async function handleConfig(req, res, requestUrl) {
   if (req.method === 'GET') {
     return sendJson(res, getConfigPayload());
+  }
+
+  if (req.method === 'DELETE') {
+    if (!isAuthed(req)) {
+      return sendJson(res, { error: 'Admin password required' }, 401);
+    }
+    const id = sanitizeInstagramUserId(requestUrl.searchParams.get('id'));
+    const remaining = configStore.accounts.filter((account) => account.instagramUserId !== id);
+    if (remaining.length === configStore.accounts.length) {
+      return sendJson(res, { error: 'Account not found' }, 404);
+    }
+    configStore.accounts = remaining;
+    if (configStore.defaultAccountId === id) {
+      configStore.defaultAccountId = remaining[0]?.instagramUserId || '';
+    }
+    clearCache(id);
+    const persisted = await saveConfigStore();
+    return sendJson(res, { ok: true, config: getConfigPayload(), persisted });
   }
 
   if (req.method !== 'POST') {
@@ -271,31 +397,32 @@ async function handleConfig(req, res) {
   if (!isAuthed(req, body)) {
     return sendJson(res, { error: 'Admin password required' }, 401);
   }
-  const accessToken = normalizeAccessToken(body.accessToken || dashboardConfig.accessToken || '');
-  const instagramUserId = sanitizeInstagramUserId(body.instagramUserId || dashboardConfig.instagramUserId || '');
-  const graphApiVersion = normalizeGraphVersion(body.graphApiVersion || dashboardConfig.graphApiVersion);
-  const apiMode = normalizeApiMode(body.apiMode || dashboardConfig.apiMode);
-  const refreshMs = clamp(toNumber(body.refreshMs, dashboardConfig.refreshMs), 15000, 86400000);
 
-  if (!accessToken) {
-    return sendJson(res, { error: 'Access token is required' }, 400);
-  }
-
+  const instagramUserId = sanitizeInstagramUserId(body.instagramUserId || '');
   if (!instagramUserId) {
     return sendJson(res, { error: 'Instagram professional account ID is required' }, 400);
   }
 
-  const nextConfig = {
-    accessToken,
+  const existing = configStore.accounts.find((account) => account.instagramUserId === instagramUserId) || null;
+  // Editing with a blank token keeps the stored one (same as the old single-account flow).
+  const accessToken = normalizeAccessToken(body.accessToken || existing?.accessToken || '');
+  if (!accessToken) {
+    return sendJson(res, { error: 'Access token is required' }, 400);
+  }
+
+  const nextAccount = {
     instagramUserId,
-    graphApiVersion,
-    apiMode,
-    refreshMs
+    accessToken,
+    username: existing?.username || '',
+    label: String(body.label ?? existing?.label ?? '').trim(),
+    profilePictureUrl: existing?.profilePictureUrl || '',
+    graphApiVersion: normalizeGraphVersion(body.graphApiVersion || existing?.graphApiVersion),
+    apiMode: normalizeApiMode(body.apiMode || existing?.apiMode)
   };
 
   let validation = null;
   if (body.validate !== false) {
-    const account = await graphGet(`/${nextConfig.instagramUserId}`, {
+    const account = await graphGet(`/${instagramUserId}`, {
       fields: [
         'id',
         'username',
@@ -305,37 +432,27 @@ async function handleConfig(req, res) {
         'follows_count',
         'media_count'
       ].join(',')
-    }, nextConfig);
-    validation = {
-      account: normalizeAccount(account, nextConfig)
-    };
+    }, accountConfig(nextAccount));
+    const normalized = normalizeAccount(account, nextAccount);
+    nextAccount.username = normalized.username;
+    nextAccount.profilePictureUrl = normalized.profilePictureUrl;
+    validation = { account: normalized };
   }
 
-  dashboardConfig = nextConfig;
-  process.env.INSTAGRAM_ACCESS_TOKEN = nextConfig.accessToken;
-  process.env.INSTAGRAM_USER_ID = nextConfig.instagramUserId;
-  process.env.GRAPH_API_VERSION = nextConfig.graphApiVersion;
-  process.env.INSTAGRAM_API_MODE = nextConfig.apiMode;
-  process.env.DASHBOARD_REFRESH_MS = String(nextConfig.refreshMs);
-  clearCache();
-  // Persist: Supabase if configured (works on serverless), otherwise the local .env file.
+  if (existing) {
+    configStore.accounts = configStore.accounts.map((account) => (
+      account.instagramUserId === instagramUserId ? nextAccount : account
+    ));
+  } else {
+    configStore.accounts = [...configStore.accounts, nextAccount];
+  }
+  if (body.makeDefault || !configStore.defaultAccountId) {
+    configStore.defaultAccountId = instagramUserId;
+  }
+  clearCache(instagramUserId);
+  // Persist: Supabase if configured (works on serverless), otherwise local config.json.
   // On a read-only serverless FS with no Supabase, the config still applies in-memory only.
-  let persisted = false;
-  if (supabaseEnabled()) {
-    try {
-      persisted = await kvSet('config', nextConfig);
-    } catch {
-      persisted = false;
-    }
-  }
-  if (!persisted) {
-    try {
-      writeDashboardEnv(nextConfig);
-      persisted = true;
-    } catch {
-      persisted = false;
-    }
-  }
+  const persisted = await saveConfigStore();
 
   return sendJson(res, {
     ok: true,
@@ -343,6 +460,23 @@ async function handleConfig(req, res) {
     validation,
     persisted
   });
+}
+
+async function handleConfigDefault(req, res) {
+  if (req.method !== 'POST') {
+    return sendJson(res, { error: 'Method not allowed' }, 405);
+  }
+  const body = await readJsonBody(req);
+  if (!isAuthed(req, body)) {
+    return sendJson(res, { error: 'Admin password required' }, 401);
+  }
+  const id = sanitizeInstagramUserId(body.instagramUserId);
+  if (!configStore.accounts.some((account) => account.instagramUserId === id)) {
+    return sendJson(res, { error: 'Account not found' }, 404);
+  }
+  configStore.defaultAccountId = id;
+  const persisted = await saveConfigStore();
+  return sendJson(res, { ok: true, config: getConfigPayload(), persisted });
 }
 
 async function handleConfigDiscover(req, res) {
@@ -355,16 +489,17 @@ async function handleConfigDiscover(req, res) {
     return sendJson(res, { error: 'Admin password required' }, 401);
   }
 
-  const accessToken = normalizeAccessToken(body.accessToken || dashboardConfig.accessToken || '');
-  const graphApiVersion = normalizeGraphVersion(body.graphApiVersion || dashboardConfig.graphApiVersion);
-  const apiMode = normalizeApiMode(body.apiMode || dashboardConfig.apiMode);
+  const fallback = defaultConfig();
+  const accessToken = normalizeAccessToken(body.accessToken || fallback.accessToken || '');
+  const graphApiVersion = normalizeGraphVersion(body.graphApiVersion || fallback.graphApiVersion);
+  const apiMode = normalizeApiMode(body.apiMode || fallback.apiMode);
 
   if (!accessToken) {
     return sendJson(res, { error: 'Access token is required to discover accounts' }, 400);
   }
 
   const discoveryConfig = {
-    ...dashboardConfig,
+    ...fallback,
     accessToken,
     graphApiVersion,
     apiMode: apiMode === 'auto' ? 'facebook' : apiMode
@@ -399,14 +534,19 @@ async function handleConfigDiscover(req, res) {
 
 function getConfigPayload() {
   return {
-    mode: hasCredentials() ? 'graph-api' : 'demo',
-    graphApiVersion: dashboardConfig.graphApiVersion,
-    apiMode: dashboardConfig.apiMode,
-    resolvedGraphHost: resolveGraphHost(dashboardConfig),
-    hasAccessToken: Boolean(dashboardConfig.accessToken),
-    tokenPreview: dashboardConfig.accessToken ? 'token set' : '',
-    instagramUserId: dashboardConfig.instagramUserId,
-    refreshMs: dashboardConfig.refreshMs,
+    mode: configStore.accounts.length ? 'graph-api' : 'demo',
+    refreshMs: configStore.refreshMs,
+    defaultAccountId: configStore.defaultAccountId,
+    accounts: configStore.accounts.map((account) => ({
+      instagramUserId: account.instagramUserId,
+      username: account.username,
+      label: account.label,
+      profilePictureUrl: account.profilePictureUrl,
+      graphApiVersion: account.graphApiVersion,
+      apiMode: account.apiMode,
+      resolvedGraphHost: resolveGraphHost(account),
+      tokenPreview: account.accessToken ? 'token set' : ''
+    })),
     requiredPermissions: [
       'instagram_basic',
       'instagram_manage_insights',
@@ -419,8 +559,93 @@ function getConfigPayload() {
   };
 }
 
+// Public list for the dashboard's account switcher - ids and labels only, never tokens.
+function getAccountsPayload() {
+  return {
+    defaultId: configStore.defaultAccountId,
+    accounts: configStore.accounts.map((account) => ({
+      id: account.instagramUserId,
+      username: account.username,
+      label: account.label,
+      profilePictureUrl: account.profilePictureUrl
+    }))
+  };
+}
+
+// Overview cards: one cheap profile call per account (cached ~5 min) plus the latest
+// persisted daily snapshot - no media/insights crawl, so it stays fast on serverless.
+async function handleAccountsSummary(res) {
+  await syncHistoryFromSupabase();
+  const cards = await Promise.all(configStore.accounts.map(async (account) => {
+    const card = {
+      id: account.instagramUserId,
+      username: account.username,
+      label: account.label,
+      profilePictureUrl: account.profilePictureUrl,
+      snapshot: latestHistorySummary(account.instagramUserId)
+    };
+    try {
+      const profile = await fetchProfile(accountConfig(account));
+      card.username = profile.username;
+      card.name = profile.name;
+      card.profilePictureUrl = profile.profilePictureUrl;
+      card.followers = profile.followers;
+      card.mediaCount = profile.mediaCount;
+    } catch (error) {
+      card.error = error.message || 'Unable to reach the Graph API for this account.';
+    }
+    return card;
+  }));
+  return sendJson(res, {
+    mode: cards.length ? 'graph-api' : 'demo',
+    defaultId: configStore.defaultAccountId,
+    accounts: cards
+  });
+}
+
+async function fetchProfile(activeConfig) {
+  const id = activeConfig.instagramUserId;
+  const cached = profileCache.get(id);
+  if (cached && cached.until > Date.now()) return cached.value;
+
+  const account = await graphGet(`/${id}`, {
+    fields: [
+      'id',
+      'username',
+      'name',
+      'profile_picture_url',
+      'followers_count',
+      'follows_count',
+      'media_count'
+    ].join(',')
+  }, activeConfig);
+  const value = normalizeAccount(account, activeConfig);
+  profileCache.set(id, { value, until: Date.now() + 5 * 60 * 1000 });
+  return value;
+}
+
+// Latest daily snapshot + day-over-day follower change for one account's overview card.
+function latestHistorySummary(accountId) {
+  const history = metricsHistory[accountId] || {};
+  const dates = Object.keys(history).sort();
+  const latest = dates.length ? history[dates[dates.length - 1]].last : null;
+  if (!latest) return null;
+  const prev = dates.length > 1 ? history[dates[dates.length - 2]].last : null;
+  return {
+    at: latest.at,
+    views: latest.views,
+    reach: latest.reach,
+    interactions: latest.interactions,
+    likes: latest.likes,
+    items: latest.items,
+    followers: latest.followers,
+    followerDayNet: prev && typeof prev.followers === 'number' ? latest.followers - prev.followers : null
+  };
+}
+
 async function handleLiveStream(req, res, requestUrl) {
-  const intervalMs = clamp(toNumber(requestUrl.searchParams.get('interval'), dashboardConfig.refreshMs), 15000, 86400000);
+  const activeConfig = accountFromUrl(requestUrl);
+  const intervalMs = clamp(toNumber(requestUrl.searchParams.get('interval'), configStore.refreshMs), 15000, 86400000);
   const limit = clamp(toNumber(requestUrl.searchParams.get('limit'), 500), 5, 2000);
   const allMedia = requestUrl.searchParams.get('all') !== '0';
 
@@ -437,7 +662,7 @@ async function handleLiveStream(req, res, requestUrl) {
     if (closed) return;
 
     try {
-      const data = await getDashboardData({ limit, allMedia, force: !firstSend });
+      const data = await getDashboardData({ limit, allMedia, force: !firstSend, activeConfig });
       firstSend = false;
       res.write(`event: dashboard\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -460,27 +685,25 @@ async function handleLiveStream(req, res, requestUrl) {
   });
 }
 
-async function getDashboardData({ limit = 500, allMedia = true, force = false } = {}) {
+async function getDashboardData({ limit = 500, allMedia = true, force = false, activeConfig = null } = {}) {
   await ensureConfigLoaded();
-  const now = Date.now();
-  const cacheKey = `${limit}:${allMedia ? 'all' : 'recent'}`;
+  const config = activeConfig || defaultConfig();
+  const cacheKey = `${config.instagramUserId || 'demo'}:${limit}:${allMedia ? 'all' : 'recent'}`;
   // Without force (a plain page load), return the last computed data regardless of age -
   // a real sync only happens on the manual button or the scheduled poll (force=1).
-  if (!force && cachedLiveData && cachedKey === cacheKey) {
-    return cachedLiveData;
+  if (!force && dashboardCache.has(cacheKey)) {
+    return dashboardCache.get(cacheKey);
   }
 
-  const data = hasCredentials()
-    ? await getGraphDashboardData({ limit, allMedia })
+  const data = hasCredentials(config)
+    ? await getGraphDashboardData({ limit, allMedia }, config)
     : getDemoDashboardData(limit);
 
-  cachedLiveData = data;
-  cachedUntil = now + Math.min(dashboardConfig.refreshMs, 20000);
-  cachedKey = cacheKey;
+  dashboardCache.set(cacheKey, data);
   return data;
 }
 
-async function getGraphDashboardData({ limit = 500, allMedia = true } = {}, activeConfig = dashboardConfig) {
+async function getGraphDashboardData({ limit = 500, allMedia = true } = {}, activeConfig = defaultConfig()) {
   const warnings = [];
   const account = await graphGet(`/${activeConfig.instagramUserId}`, {
     fields: [
@@ -506,18 +729,12 @@ async function getGraphDashboardData({ limit = 500, allMedia = true } = {}, acti
     return result.metrics;
   });
 
-  const content = mediaResponse.media.map((media, index) => normalizeContent(media, insightResults[index] || {}));
+  const previousMap = previousContentMetrics.get(activeConfig.instagramUserId) || new Map();
+  const content = mediaResponse.media.map((media, index) => normalizeContent(media, insightResults[index] || {}, previousMap));
 
   // Pull the persisted daily snapshots (Supabase) before composing, so day-over-day
   // deltas + follower trend survive serverless cold starts. No-op without Supabase.
-  if (supabaseEnabled()) {
-    try {
-      const stored = await kvGet('metrics_history');
-      if (stored && typeof stored === 'object') metricsHistory = stored;
-    } catch {
-      // best-effort; fall back to whatever is in memory
-    }
-  }
+  await syncHistoryFromSupabase();
 
   const dashboard = composeDashboard({
     mode: 'graph-api',
@@ -533,7 +750,7 @@ async function getGraphDashboardData({ limit = 500, allMedia = true } = {}, acti
     refreshMs: activeConfig.refreshMs,
     activeConfig
   });
-  previousContentMetrics = new Map(dashboard.content.map((item) => [item.id, pickComparableMetrics(item)]));
+  previousContentMetrics.set(activeConfig.instagramUserId, new Map(dashboard.content.map((item) => [item.id, pickComparableMetrics(item)])));
   [dashboard.audience, dashboard.accountInsights, dashboard.summary.followerTrend] = await Promise.all([
     fetchAudience(activeConfig),
     fetchAccountInsights(activeConfig),
@@ -558,8 +775,9 @@ async function getGraphDashboardData({ limit = 500, allMedia = true } = {}, acti
 // Cached ~30 min: demographics change slowly and each refresh is several API calls.
 async function fetchAudience(activeConfig) {
   const now = Date.now();
-  if (cachedAudience && cachedAudienceUntil > now && cachedAudienceId === activeConfig.instagramUserId) {
-    return cachedAudience;
+  const cached = audienceCache.get(activeConfig.instagramUserId);
+  if (cached && cached.until > now) {
+    return cached.value;
   }
 
   // Windows offered in the "By gender" dropdown. Meta returns empty for some windows
@@ -648,9 +866,7 @@ async function fetchAudience(activeConfig) {
     result = { available: false, reason: error.message || 'Audience demographics are unavailable for this account.' };
   }
 
-  cachedAudience = result;
-  cachedAudienceUntil = now + 30 * 60 * 1000;
-  cachedAudienceId = activeConfig.instagramUserId;
+  audienceCache.set(activeConfig.instagramUserId, { value: result, until: now + 30 * 60 * 1000 });
   return result;
 }
 
@@ -660,8 +876,9 @@ async function fetchAudience(activeConfig) {
 // only summing the posts currently loaded. Cached ~30 min like fetchAudience.
 async function fetchAccountInsights(activeConfig) {
   const now = Date.now();
-  if (cachedAccountInsights && cachedAccountInsightsUntil > now && cachedAccountInsightsId === activeConfig.instagramUserId) {
-    return cachedAccountInsights;
+  const cached = accountInsightsCache.get(activeConfig.instagramUserId);
+  if (cached && cached.until > now) {
+    return cached.value;
   }
 
   const id = activeConfig.instagramUserId;
@@ -869,9 +1086,7 @@ async function fetchAccountInsights(activeConfig) {
       }
       : { available: false, reason: 'Account-level insights are unavailable for this account or API version.' };
 
-    cachedAccountInsights = result;
-    cachedAccountInsightsUntil = now + 30 * 60 * 1000;
-    cachedAccountInsightsId = id;
+    accountInsightsCache.set(id, { value: result, until: now + 30 * 60 * 1000 });
     return result;
   } catch (error) {
     return { available: false, reason: error.message || 'Account-level insights are unavailable.' };
@@ -880,8 +1095,9 @@ async function fetchAccountInsights(activeConfig) {
 
 async function fetchFollowerGrowth(activeConfig, account, days = 90) {
   const now = Date.now();
-  if (cachedFollowerGrowth && cachedFollowerGrowthUntil > now && cachedFollowerGrowthId === activeConfig.instagramUserId) {
-    return cachedFollowerGrowth;
+  const cached = followerGrowthCache.get(activeConfig.instagramUserId);
+  if (cached && cached.until > now) {
+    return cached.value;
   }
 
   const id = activeConfig.instagramUserId;
@@ -980,9 +1196,7 @@ async function fetchFollowerGrowth(activeConfig, account, days = 90) {
       series
     };
 
-    cachedFollowerGrowth = result;
-    cachedFollowerGrowthUntil = now + 30 * 60 * 1000;
-    cachedFollowerGrowthId = id;
+    followerGrowthCache.set(id, { value: result, until: now + 30 * 60 * 1000 });
     return result;
   } catch (error) {
     return { available: false, source: 'graph-api', reason: error.message || 'Daily follower movement is unavailable.', dayNet: 0, weekNet: 0, series: [] };
@@ -1193,7 +1407,7 @@ function mediaFieldSets() {
   ];
 }
 
-async function graphGet(edge, params = {}, activeConfig = dashboardConfig) {
+async function graphGet(edge, params = {}, activeConfig = defaultConfig()) {
   const host = resolveGraphHost(activeConfig);
   const url = new URL(`https://${host}/${activeConfig.graphApiVersion}${edge}`);
 
@@ -1231,7 +1445,7 @@ async function graphGet(edge, params = {}, activeConfig = dashboardConfig) {
   return payload;
 }
 
-async function fetchInsights(mediaId, activeConfig = dashboardConfig, { isReel = false } = {}) {
+async function fetchInsights(mediaId, activeConfig = defaultConfig(), { isReel = false } = {}) {
   // Reels expose watch-time metrics (avg + total time watched) that other media don't.
   const reelMetrics = isReel ? ['ig_reels_avg_watch_time', 'ig_reels_video_view_total_time'] : [];
   const metricGroups = [
@@ -1292,7 +1506,7 @@ function insightValue(row) {
   return 0;
 }
 
-function normalizeAccount(account, activeConfig = dashboardConfig) {
+function normalizeAccount(account, activeConfig = defaultConfig()) {
   return {
     id: account.id || activeConfig.instagramUserId,
     username: account.username || 'instagram',
@@ -1304,8 +1518,8 @@ function normalizeAccount(account, activeConfig = dashboardConfig) {
   };
 }
 
-function normalizeContent(media, insights) {
-  const previous = previousContentMetrics.get(media.id);
+function normalizeContent(media, insights, previousMap = new Map()) {
+  const previous = previousMap.get(media.id);
   const contentType = getContentType(media);
   const viewsMetric = pickMetric(insights, ['views', 'plays', 'video_views', 'impressions']);
   const reachMetric = pickMetric(insights, ['reach']);
@@ -1571,7 +1785,7 @@ function buildDiagnostics({ mode, account, loadMeta, metricAvailability, activeC
     dataSource: mode === 'graph-api' ? 'Instagram Graph API' : 'Demo data',
     apiHost: mode === 'graph-api' ? resolveGraphHost(activeConfig) : 'local demo',
     apiMode: mode === 'graph-api' ? activeConfig.apiMode : 'demo',
-    graphApiVersion: activeConfig.graphApiVersion || dashboardConfig.graphApiVersion,
+    graphApiVersion: activeConfig.graphApiVersion,
     accountMediaCount: account.mediaCount,
     loadedCount: loadMeta.loadedCount || 0,
     requestedLimit: loadMeta.requestedLimit || 0,
@@ -1598,7 +1812,7 @@ function buildAvailabilityWarnings(metricAvailability, contentCount) {
   });
 }
 
-function composeDashboard({ mode, account, content, loadMeta = {}, warnings = [], refreshMs, activeConfig = dashboardConfig }) {
+function composeDashboard({ mode, account, content, loadMeta = {}, warnings = [], refreshMs, activeConfig = defaultConfig() }) {
   const enrichedContent = enrichContentAnalytics(content);
   const sorted = [...enrichedContent].sort((a, b) => metricSortValue(b.views) - metricSortValue(a.views));
   const breakdown = buildContentBreakdown(enrichedContent);
@@ -1657,13 +1871,13 @@ function composeDashboard({ mode, account, content, loadMeta = {}, warnings = []
       items: enrichedContent.length,
       followers: account.followers,
       follows: account.follows
-    })
+    }, activeConfig.instagramUserId || account.id)
     : { available: false };
   const followerTrend = buildFollowerTrend(account, mode);
 
   return {
     mode,
-    graphApiVersion: activeConfig.graphApiVersion || dashboardConfig.graphApiVersion,
+    graphApiVersion: activeConfig.graphApiVersion,
     updatedAt: now,
     refreshMs,
     account,
@@ -1716,12 +1930,33 @@ function loadMetricsHistory() {
   try {
     if (existsSync(historyPath)) {
       const parsed = JSON.parse(readFileSync(historyPath, 'utf8'));
-      if (parsed && typeof parsed === 'object') return parsed;
+      if (parsed && typeof parsed === 'object') return migrateHistoryShape(parsed);
     }
   } catch {
     // A corrupt or unreadable history file is non-fatal - start fresh.
   }
   return {};
+}
+
+// History used to be flat { 'YYYY-MM-DD': {...} } for the one configured account;
+// it is now nested per account id. Legacy data belongs to the seeded default account.
+function migrateHistoryShape(parsed) {
+  const keys = Object.keys(parsed);
+  const isLegacy = keys.length && keys.every((key) => /^\d{4}-\d{2}-\d{2}$/.test(key));
+  if (!isLegacy) return parsed;
+  return { [configStore.defaultAccountId || 'default']: parsed };
+}
+
+// Refresh the in-memory history from Supabase so daily deltas and the overview
+// cards survive serverless cold starts. No-op without Supabase.
+async function syncHistoryFromSupabase() {
+  if (!supabaseEnabled()) return;
+  try {
+    const stored = await kvGet('metrics_history');
+    if (stored && typeof stored === 'object') metricsHistory = migrateHistoryShape(stored);
+  } catch {
+    // best-effort; fall back to whatever is in memory
+  }
 }
 
 function saveMetricsHistory() {
@@ -1732,10 +1967,11 @@ function saveMetricsHistory() {
   }
 }
 
-// Snapshot today's totals and return the change vs the previous day's close.
-// On the first day (no prior history) it reports growth so far today instead.
-function trackDailyMetrics(totals) {
+// Snapshot today's totals for one account and return the change vs the previous
+// day's close. On the first day (no prior history) it reports growth so far today.
+function trackDailyMetrics(totals, accountId) {
   const key = todayKey();
+  const history = metricsHistory[accountId] || (metricsHistory[accountId] = {});
   const snapshot = {
     at: new Date().toISOString(),
     views: totals.views,
@@ -1747,22 +1983,22 @@ function trackDailyMetrics(totals) {
     follows: totals.follows
   };
 
-  const priorDates = Object.keys(metricsHistory).filter((date) => date < key).sort();
-  const prev = priorDates.length ? metricsHistory[priorDates[priorDates.length - 1]] : null;
+  const priorDates = Object.keys(history).filter((date) => date < key).sort();
+  const prev = priorDates.length ? history[priorDates[priorDates.length - 1]] : null;
 
-  if (metricsHistory[key]) {
-    metricsHistory[key].last = snapshot;
+  if (history[key]) {
+    history[key].last = snapshot;
   } else {
-    metricsHistory[key] = { first: snapshot, last: snapshot };
+    history[key] = { first: snapshot, last: snapshot };
   }
 
-  const allDates = Object.keys(metricsHistory).sort();
+  const allDates = Object.keys(history).sort();
   while (allDates.length > 14) {
-    delete metricsHistory[allDates.shift()];
+    delete history[allDates.shift()];
   }
   saveMetricsHistory();
 
-  const baseline = (prev && prev.last) ? prev.last : metricsHistory[key].first;
+  const baseline = (prev && prev.last) ? prev.last : history[key].first;
   const basis = (prev && prev.last) ? 'previous-day' : 'today';
   const sinceDate = (prev && prev.last) ? priorDates[priorDates.length - 1] : key;
 
@@ -1874,10 +2110,10 @@ function getDemoDashboardData(limit) {
       allMedia: true,
       hasMore: demoState.content.length > content.length
     },
-    warnings: ['Demo mode is active. Use the Connect Graph API panel to add your token and Instagram professional account ID.'],
-    refreshMs: dashboardConfig.refreshMs
+    warnings: ['Demo mode is active. Use the admin page to add your token and Instagram professional account ID.'],
+    refreshMs: configStore.refreshMs
   });
-  previousContentMetrics = new Map(dashboard.content.map((item) => [item.id, pickComparableMetrics(item)]));
+  previousContentMetrics.set('demo', new Map(dashboard.content.map((item) => [item.id, pickComparableMetrics(item)])));
   dashboard.audience = demoAudience();
   // No synthesized account insights or reach-source split - these are real-data-only.
   dashboard.accountInsights = { available: false, reason: 'Connect your Instagram account to see windowed account-level insights and reach source.' };
@@ -2091,49 +2327,29 @@ async function readJsonBody(req) {
   }
 }
 
-function hasCredentials(config = dashboardConfig) {
+function hasCredentials(config = defaultConfig()) {
   return Boolean(config.accessToken && config.instagramUserId);
 }
 
-function clearCache() {
-  cachedLiveData = null;
-  cachedUntil = 0;
-  cachedKey = '';
-  previousContentMetrics = new Map();
-}
-
-function writeDashboardEnv(config) {
-  const values = {
-    INSTAGRAM_ACCESS_TOKEN: config.accessToken,
-    INSTAGRAM_USER_ID: config.instagramUserId,
-    GRAPH_API_VERSION: config.graphApiVersion,
-    INSTAGRAM_API_MODE: config.apiMode,
-    DASHBOARD_REFRESH_MS: String(config.refreshMs),
-    PORT: String(PORT)
-  };
-  const lines = existsSync(envPath)
-    ? readFileSync(envPath, 'utf8').split(/\r?\n/)
-    : [];
-  const seen = new Set();
-  const nextLines = lines.map((line) => {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=/);
-    if (!match || !(match[1] in values)) return line;
-
-    seen.add(match[1]);
-    return `${match[1]}=${quoteEnv(values[match[1]])}`;
-  });
-
-  for (const [key, value] of Object.entries(values)) {
-    if (!seen.has(key)) {
-      nextLines.push(`${key}=${quoteEnv(value)}`);
-    }
+// Drop one account's cached data (after a token change or delete), or everything.
+function clearCache(accountId = '') {
+  if (!accountId) {
+    dashboardCache.clear();
+    audienceCache.clear();
+    accountInsightsCache.clear();
+    followerGrowthCache.clear();
+    profileCache.clear();
+    previousContentMetrics.clear();
+    return;
   }
-
-  writeFileSync(envPath, `${nextLines.filter((line, index, all) => line || index < all.length - 1).join('\n').replace(/\n+$/u, '')}\n`);
-}
-
-function quoteEnv(value) {
-  return JSON.stringify(String(value || ''));
+  for (const key of [...dashboardCache.keys()]) {
+    if (key.startsWith(`${accountId}:`)) dashboardCache.delete(key);
+  }
+  audienceCache.delete(accountId);
+  accountInsightsCache.delete(accountId);
+  followerGrowthCache.delete(accountId);
+  profileCache.delete(accountId);
+  previousContentMetrics.delete(accountId);
 }
 
 function sanitizeInstagramUserId(value) {
@@ -2150,7 +2366,7 @@ function normalizeApiMode(value) {
     : 'auto';
 }
 
-function resolveGraphHost(config = dashboardConfig) {
+function resolveGraphHost(config = defaultConfig()) {
   const mode = normalizeApiMode(config.apiMode);
   if (mode === 'instagram') return 'graph.instagram.com';
   if (mode === 'facebook') return 'graph.facebook.com';

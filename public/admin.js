@@ -9,9 +9,11 @@ const els = {
   lockFeedback: document.querySelector('#lock-feedback'),
   configState: document.querySelector('#config-state'),
   statusRow: document.querySelector('#status-row'),
+  accountsList: document.querySelector('#accounts-list'),
   configForm: document.querySelector('#config-form'),
   tokenInput: document.querySelector('#token-input'),
   igUserIdInput: document.querySelector('#ig-user-id-input'),
+  labelInput: document.querySelector('#label-input'),
   graphVersionInput: document.querySelector('#graph-version-input'),
   apiModeInput: document.querySelector('#api-mode-input'),
   saveConfig: document.querySelector('#save-config'),
@@ -35,9 +37,43 @@ function init() {
     els.igUserIdInput.value = button.dataset.igUserId;
     setFeedback(`Selected @${button.dataset.username || 'instagram'} (${button.dataset.igUserId})`, 'success');
   });
+  els.accountsList.addEventListener('click', onAccountAction);
 
   const saved = sessionStorage.getItem(PW_KEY);
   if (saved) tryLogin(saved, { silent: true });
+}
+
+async function onAccountAction(event) {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const { action, id, username, label } = button.dataset;
+
+  if (action === 'edit') {
+    els.igUserIdInput.value = id;
+    els.labelInput.value = label || '';
+    els.tokenInput.value = '';
+    els.tokenInput.placeholder = 'Stored token kept — paste to replace';
+    setFeedback(`Editing @${username || id}. Save and test applies the changes.`, '');
+    els.igUserIdInput.focus();
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    if (action === 'default') {
+      await postJson('/api/config/default', { instagramUserId: id });
+      setFeedback(`@${username || id} is now the default account.`, 'success');
+    } else if (action === 'delete') {
+      if (!window.confirm(`Remove @${username || id} from the dashboard? Its saved token is deleted.`)) return;
+      await deleteJson(`/api/config?id=${encodeURIComponent(id)}`);
+      setFeedback(`Removed @${username || id}.`, 'success');
+    }
+    await Promise.all([loadStatus(), loadConfig()]);
+  } catch (error) {
+    setFeedback(error.message || 'Action failed', 'error');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function onUnlock(event) {
@@ -74,11 +110,10 @@ async function tryLogin(password, { silent }) {
 async function loadStatus() {
   try {
     const s = await getJson('/api/status');
-    const yes = (v) => v ? '<span class="pill-ok">Yes</span>' : '<span class="pill-no">No</span>';
     els.statusRow.innerHTML = `
       <div><span>Mode</span><strong>${s.mode === 'graph-api' ? 'Graph API' : 'Demo'}</strong></div>
-      <div><span>Token set</span><strong>${yes(s.hasAccessToken)}</strong></div>
-      <div><span>Account ID</span><strong>${escapeHtml(s.instagramUserId || '—')}</strong></div>
+      <div><span>Accounts</span><strong>${Number(s.accountsCount) || 0}</strong></div>
+      <div><span>Default account</span><strong>${escapeHtml(s.username ? `@${s.username}` : (s.defaultAccountId || '—'))}</strong></div>
       <div><span>API version</span><strong>${escapeHtml(s.graphApiVersion || '—')}</strong></div>
       <div><span>Host</span><strong>${escapeHtml(s.resolvedGraphHost || '—')}</strong></div>`;
   } catch {
@@ -89,19 +124,45 @@ async function loadStatus() {
 async function loadConfig() {
   try {
     const config = await getJson('/api/config');
-    const connected = Boolean(config.hasAccessToken && config.instagramUserId);
-    els.configState.className = `config-state ${connected ? 'connected' : 'demo'}`;
-    els.configState.textContent = connected ? `Configured ${config.instagramUserId}` : 'Not connected';
-    els.igUserIdInput.value = config.instagramUserId || '';
-    els.graphVersionInput.value = config.graphApiVersion || 'v23.0';
-    els.apiModeInput.value = config.apiMode || 'auto';
-    els.tokenInput.value = '';
-    els.tokenInput.placeholder = connected
-      ? `Stored ${config.tokenPreview || 'token'} — paste to replace`
-      : 'Paste token to connect';
+    const accounts = config.accounts || [];
+    els.configState.className = `config-state ${accounts.length ? 'connected' : 'demo'}`;
+    els.configState.textContent = accounts.length
+      ? `${accounts.length} account${accounts.length === 1 ? '' : 's'} configured`
+      : 'Not connected';
+    renderAccountsList(accounts, config.defaultAccountId || '');
+    els.graphVersionInput.value = els.graphVersionInput.value || 'v23.0';
+    els.tokenInput.placeholder = 'Paste token to add or replace an account';
   } catch (error) {
     setFeedback(error.message || 'Unable to load settings', 'error');
   }
+}
+
+function renderAccountsList(accounts, defaultAccountId) {
+  if (!accounts.length) {
+    els.accountsList.innerHTML = '<p class="accounts-empty">No accounts yet. Add the first one below — the dashboard runs in demo mode until then.</p>';
+    return;
+  }
+
+  els.accountsList.innerHTML = accounts.map((account) => {
+    const isDefault = account.instagramUserId === defaultAccountId;
+    const avatar = account.profilePictureUrl
+      ? `<img src="${escapeAttribute(account.profilePictureUrl)}" alt="">`
+      : escapeHtml((account.username || 'IG').slice(0, 2).toUpperCase());
+    const attrs = `data-id="${escapeAttribute(account.instagramUserId)}" data-username="${escapeAttribute(account.username)}" data-label="${escapeAttribute(account.label)}"`;
+    return `
+      <div class="account-row">
+        <span class="avatar">${avatar}</span>
+        <div class="account-row-name">
+          <strong>@${escapeHtml(account.username || 'instagram')}${isDefault ? ' <span class="default-badge">Default</span>' : ''}</strong>
+          <small>${escapeHtml(account.label ? `${account.label} · ` : '')}${escapeHtml(account.instagramUserId)}</small>
+        </div>
+        <div class="account-row-actions">
+          <button class="secondary-button small-button" type="button" data-action="edit" ${attrs}>Edit</button>
+          ${isDefault ? '' : `<button class="secondary-button small-button" type="button" data-action="default" ${attrs}>Make default</button>`}
+          <button class="secondary-button small-button" type="button" data-action="delete" ${attrs}>Delete</button>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 async function saveConfig(event) {
@@ -114,15 +175,17 @@ async function saveConfig(event) {
     const payload = await postJson('/api/config', {
       accessToken: els.tokenInput.value.trim(),
       instagramUserId: els.igUserIdInput.value.trim(),
+      label: els.labelInput.value.trim(),
       graphApiVersion: els.graphVersionInput.value.trim(),
       apiMode: els.apiModeInput.value,
       validate: true
     });
     await Promise.all([loadStatus(), loadConfig()]);
-    setFeedback(`Connected to @${payload.validation?.account?.username || payload.config.instagramUserId}`, 'success');
+    els.tokenInput.value = '';
+    setFeedback(`Connected @${payload.validation?.account?.username || els.igUserIdInput.value.trim()} — it now appears on the dashboard overview.`, 'success');
     if (payload.persisted === false) {
       els.persistNote.hidden = false;
-      els.persistNote.textContent = 'Applied for now, but it could not be saved permanently. Connect Supabase (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) to persist settings, or set INSTAGRAM_ACCESS_TOKEN / INSTAGRAM_USER_ID as Vercel env vars and redeploy.';
+      els.persistNote.textContent = 'Applied for now, but it could not be saved permanently. Connect Supabase (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) to persist accounts across restarts/deploys.';
     }
   } catch (error) {
     setFeedback(error.message || 'Unable to validate these credentials', 'error');
@@ -182,6 +245,16 @@ async function postJson(url, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
     body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+async function deleteJson(url) {
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'x-admin-password': adminPw }
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);

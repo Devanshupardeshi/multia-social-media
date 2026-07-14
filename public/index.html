@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Instagram Accuracy Command Center</title>
-    <link rel="stylesheet" href="/styles.css?v=19">
+    <link rel="stylesheet" href="/styles.css?v=20">
   </head>
   <body>
     <div class="app-shell">
@@ -92,6 +92,11 @@
           </div>
 
           <div class="toolbar" aria-label="Dashboard controls">
+            <a class="back-link hidden" id="all-accounts-link" href="/">&larr; All accounts</a>
+            <label class="select-label hidden" id="account-select-label">
+              <span>Account</span>
+              <select id="account-select"></select>
+            </label>
             <label class="select-label">
               <span>Refresh</span>
               <select id="refresh-select">
@@ -107,6 +112,17 @@
             </button>
           </div>
         </header>
+
+        <section class="accounts-overview hidden" id="accounts-overview" aria-label="Registered accounts">
+          <div class="section-heading">
+            <div>
+              <p class="section-label">Accounts</p>
+              <h2>All registered accounts</h2>
+            </div>
+            <button class="secondary-button" id="overview-refresh" type="button">Refresh</button>
+          </div>
+          <div class="account-cards" id="account-cards"></div>
+        </section>
 
         <section class="notice hidden" id="warning-panel" aria-live="polite"></section>
 
@@ -573,6 +589,6 @@
       </main>
     </div>
 
-    <script src="/app.js?v=28" type="module"></script>
+    <script src="/app.js?v=29" type="module"></script>
   </body>
 </html>
