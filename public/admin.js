@@ -110,12 +110,19 @@ async function tryLogin(password, { silent }) {
 async function loadStatus() {
   try {
     const s = await getJson('/api/status');
+    const storage = s.supabase
+      ? '<span class="pill-ok">Supabase</span>'
+      : (s.serverless ? '<span class="pill-no">In-memory only</span>' : 'Local file');
     els.statusRow.innerHTML = `
       <div><span>Mode</span><strong>${s.mode === 'graph-api' ? 'Graph API' : 'Demo'}</strong></div>
       <div><span>Accounts</span><strong>${Number(s.accountsCount) || 0}</strong></div>
       <div><span>Default account</span><strong>${escapeHtml(s.username ? `@${s.username}` : (s.defaultAccountId || '—'))}</strong></div>
       <div><span>API version</span><strong>${escapeHtml(s.graphApiVersion || '—')}</strong></div>
-      <div><span>Host</span><strong>${escapeHtml(s.resolvedGraphHost || '—')}</strong></div>`;
+      <div><span>Host</span><strong>${escapeHtml(s.resolvedGraphHost || '—')}</strong></div>
+      <div><span>Storage</span><strong>${storage}</strong></div>`;
+    if (s.serverless && !s.supabase) {
+      setFeedback('Accounts will NOT persist: this deployment has no Supabase. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel env vars, run supabase-schema.sql once, then redeploy.', 'error');
+    }
   } catch {
     els.statusRow.innerHTML = '<div><span>Status</span><strong>Unavailable</strong></div>';
   }

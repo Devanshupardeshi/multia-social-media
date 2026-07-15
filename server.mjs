@@ -129,7 +129,8 @@ async function saveConfigStore() {
 // Optional Supabase persistence (gives serverless deploys a real store for config +
 // metrics history). Uses the REST API directly - no SDK dependency. When the env vars
 // are absent everything falls back to env-var config + the local file, unchanged.
-let configLoaded = false;
+let configLoadedAt = 0;
+const CONFIG_TTL_MS = 5000;
 
 function supabaseEnabled() {
   return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -162,19 +163,21 @@ async function kvSet(storeKey, value) {
   return response.ok;
 }
 
-// Load admin-saved config from Supabase once per process (cold start). Stored config
-// overrides env-var defaults so the /admin page can manage the connection on Vercel.
-async function ensureConfigLoaded() {
-  if (configLoaded) return;
-  configLoaded = true;
+// Load admin-saved config from Supabase. Re-read on a short TTL (not once per process):
+// Vercel keeps several warm lambda instances, and an account added through one instance
+// must become visible to the others without waiting for a cold start. Mutating handlers
+// pass force=true so they never act on a stale copy.
+async function ensureConfigLoaded(force = false) {
   if (!supabaseEnabled()) return;
+  if (!force && Date.now() - configLoadedAt < CONFIG_TTL_MS) return;
   try {
     const stored = await kvGet('config');
+    configLoadedAt = Date.now();
     if (stored && typeof stored === 'object') {
       configStore = migrateStoredConfig(stored);
     }
   } catch {
-    // Persisted config is best-effort; fall back to the env/file seed.
+    // Persisted config is best-effort; keep the current copy and retry after the TTL.
   }
 }
 
@@ -324,6 +327,8 @@ function getStatusPayload(config = defaultConfig()) {
     accountsCount: configStore.accounts.length,
     defaultAccountId: configStore.defaultAccountId,
     refreshMs: configStore.refreshMs,
+    supabase: supabaseEnabled(),
+    serverless: Boolean(process.env.VERCEL),
     serverTime: new Date().toISOString()
   };
 }
@@ -358,6 +363,9 @@ async function handleRefreshInterval(req, res) {
     return sendJson(res, { error: 'Method not allowed' }, 405);
   }
   const body = await readJsonBody(req);
+  // Fresh read first - this writes the whole store, and a stale copy from another
+  // serverless instance would silently clobber accounts saved elsewhere.
+  await ensureConfigLoaded(true);
   const refreshMs = clamp(toNumber(body.refreshMs, configStore.refreshMs), 15000, 86400000);
   configStore = { ...configStore, refreshMs };
   const persisted = await saveConfigStore();
@@ -375,6 +383,7 @@ async function handleConfig(req, res, requestUrl) {
     if (!isAuthed(req)) {
       return sendJson(res, { error: 'Admin password required' }, 401);
     }
+    await ensureConfigLoaded(true);
     const id = sanitizeInstagramUserId(requestUrl.searchParams.get('id'));
     const remaining = configStore.accounts.filter((account) => account.instagramUserId !== id);
     if (remaining.length === configStore.accounts.length) {
@@ -397,6 +406,7 @@ async function handleConfig(req, res, requestUrl) {
   if (!isAuthed(req, body)) {
     return sendJson(res, { error: 'Admin password required' }, 401);
   }
+  await ensureConfigLoaded(true);
 
   const instagramUserId = sanitizeInstagramUserId(body.instagramUserId || '');
   if (!instagramUserId) {
@@ -470,6 +480,7 @@ async function handleConfigDefault(req, res) {
   if (!isAuthed(req, body)) {
     return sendJson(res, { error: 'Admin password required' }, 401);
   }
+  await ensureConfigLoaded(true);
   const id = sanitizeInstagramUserId(body.instagramUserId);
   if (!configStore.accounts.some((account) => account.instagramUserId === id)) {
     return sendJson(res, { error: 'Account not found' }, 404);
