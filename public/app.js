@@ -17,6 +17,7 @@ const state = {
   minViews: 0,
   query: '',
   isRefreshing: false,
+  metricsAnimated: false,
   performanceRange: null,
   performanceCal: null,
   reachRange: null,
@@ -30,6 +31,10 @@ const state = {
 
 const els = {
   connectionChip: document.querySelector('#connection-chip'),
+  syncLoader: document.querySelector('#sync-loader'),
+  syncStage: document.querySelector('#sync-stage'),
+  syncTip: document.querySelector('#sync-tip'),
+  syncFill: document.querySelector('#sync-fill'),
   accountsOverview: document.querySelector('#accounts-overview'),
   accountCards: document.querySelector('#account-cards'),
   overviewRefresh: document.querySelector('#overview-refresh'),
@@ -56,7 +61,6 @@ const els = {
   funnelChart: document.querySelector('#funnel-chart'),
   savesSharesChart: document.querySelector('#saves-shares-chart'),
   heatmapChart: document.querySelector('#heatmap-chart'),
-  scatterChart: document.querySelector('#scatter-chart'),
   distributionChart: document.querySelector('#distribution-chart'),
   engagementChart: document.querySelector('#engagement-chart'),
   reachChart: document.querySelector('#reach-chart'),
@@ -127,6 +131,8 @@ async function init() {
   }
 
   populateAccountSwitcher();
+  applyPage();
+  window.addEventListener('hashchange', applyPage);
   await loadStatus();
   await refreshNow(true, false); // initial load: show last data, do not force a sync
   connectLiveStream();
@@ -136,6 +142,131 @@ async function init() {
 function withAccount(url) {
   if (!state.accountId) return url;
   return `${url}${url.includes('?') ? '&' : '?'}account=${encodeURIComponent(state.accountId)}`;
+}
+
+// Sync loader: the "dashboard assembles itself" panel for the first load, plus a slim
+// top sweep bar for background syncs. Stages mirror the real server-side order.
+const SYNC_STAGES = [
+  'Connecting to Instagram Graph API…',
+  'Loading account profile…',
+  'Paging through your media…',
+  'Fetching insights for every post…',
+  'Loading audience demographics…',
+  'Measuring follower movement…',
+  'Composing your dashboard…'
+];
+
+const SYNC_TIPS = [
+  "Reach counts unique accounts — repeats don't inflate it.",
+  'Velocity is views gained since your last sync.',
+  'Saves are the strongest intent signal a viewer can send.',
+  'A content score of 80+ marks a Breakout post.',
+  'Your best posting window comes from the posting heatmap.',
+  'Click any point, bar or segment to see its exact numbers.',
+  'Engagement rate is interactions divided by reach.'
+];
+
+const syncUi = {
+  showTimer: null,
+  stageTimer: null,
+  tipTimer: null,
+  cycleTimer: null,
+  progressTimer: null,
+  stage: 0,
+  tip: 0,
+  progress: 0,
+  visible: false
+};
+
+function startSyncLoader() {
+  document.body.classList.add('is-syncing');
+  // The full loader is first-load only; a 400ms delay keeps fast cached loads flash-free.
+  if (state.data || syncUi.visible || syncUi.showTimer) return;
+  syncUi.showTimer = setTimeout(showSyncLoader, 400);
+}
+
+function showSyncLoader() {
+  syncUi.showTimer = null;
+  if (state.data || !els.syncLoader) return;
+  syncUi.visible = true;
+  syncUi.stage = 0;
+  syncUi.tip = 0;
+  syncUi.progress = 0;
+  if (els.syncFill) els.syncFill.style.width = '0%';
+  if (els.syncStage) els.syncStage.textContent = SYNC_STAGES[0];
+  els.syncLoader.classList.remove('hidden');
+
+  retriggerAssemble();
+  syncUi.cycleTimer = setInterval(retriggerAssemble, 4600);
+  syncUi.stageTimer = setInterval(() => {
+    if (syncUi.stage < SYNC_STAGES.length - 1) {
+      syncUi.stage += 1;
+      swapSyncText(els.syncStage, SYNC_STAGES[syncUi.stage]);
+    }
+  }, 2200);
+  syncUi.tipTimer = setInterval(() => {
+    syncUi.tip = (syncUi.tip + 1) % SYNC_TIPS.length;
+    swapSyncText(els.syncTip, SYNC_TIPS[syncUi.tip]);
+  }, 3600);
+  syncUi.progressTimer = setInterval(() => {
+    // Ease toward 90% and hold - the bar only completes when real data arrives.
+    syncUi.progress = Math.min(90, syncUi.progress + (90 - syncUi.progress) * 0.055 + 0.35);
+    if (els.syncFill) els.syncFill.style.width = `${syncUi.progress.toFixed(1)}%`;
+  }, 300);
+}
+
+function stopSyncLoader() {
+  document.body.classList.remove('is-syncing');
+  if (syncUi.showTimer) {
+    clearTimeout(syncUi.showTimer);
+    syncUi.showTimer = null;
+  }
+  if (!syncUi.visible) return;
+  [syncUi.stageTimer, syncUi.tipTimer, syncUi.cycleTimer, syncUi.progressTimer].forEach((timer) => clearInterval(timer));
+  syncUi.stageTimer = syncUi.tipTimer = syncUi.cycleTimer = syncUi.progressTimer = null;
+  syncUi.visible = false;
+  if (els.syncFill) els.syncFill.style.width = '100%';
+  setTimeout(() => els.syncLoader?.classList.add('hidden'), 350);
+}
+
+function swapSyncText(el, text) {
+  if (!el) return;
+  el.classList.add('swap');
+  setTimeout(() => {
+    el.textContent = text;
+    el.classList.remove('swap');
+  }, 200);
+}
+
+// Restarting the class-driven animation keeps every SVG element in lockstep each cycle.
+function retriggerAssemble() {
+  const svg = els.syncLoader?.querySelector('.assemble');
+  if (!svg) return;
+  svg.classList.remove('play');
+  void svg.getBoundingClientRect();
+  svg.classList.add('play');
+}
+
+// Hash router: each sidebar item is its own page. All pages stay in the DOM and
+// keep rendering on every sync - the router only controls which one is visible.
+const APP_PAGES = ['overview', 'analytics', 'audience', 'content', 'operations', 'pulse', 'reports', 'guide'];
+
+function currentPage() {
+  const hash = location.hash.replace('#', '');
+  if (hash === 'reels') return 'content'; // legacy anchor
+  return APP_PAGES.includes(hash) ? hash : 'overview';
+}
+
+function applyPage() {
+  const page = currentPage();
+  document.querySelectorAll('.app-page').forEach((section) => {
+    section.classList.toggle('active', section.dataset.page === page);
+  });
+  document.querySelectorAll('.nav-item').forEach((item) => {
+    const href = item.getAttribute('href') || '';
+    item.classList.toggle('active', href === `#${page}`);
+  });
+  window.scrollTo(0, 0);
 }
 
 function populateAccountSwitcher() {
@@ -157,6 +288,9 @@ function enterOverview() {
   els.accountAvatar.textContent = 'IG';
   els.accountTitle.textContent = 'All accounts';
   els.accountMeta.textContent = `${state.accounts.length} registered account${state.accounts.length === 1 ? '' : 's'}`;
+  document.querySelectorAll('.nav-item').forEach((item) => {
+    item.classList.toggle('active', item.getAttribute('href') === '/');
+  });
   updateConnection('connected', 'Graph API');
   loadOverview();
 }
@@ -236,7 +370,8 @@ function bindEvents() {
   // every piece of per-account view state resets cleanly.
   els.accountSelect?.addEventListener('change', () => {
     if (els.accountSelect.value && els.accountSelect.value !== state.accountId) {
-      location.href = `/?account=${encodeURIComponent(els.accountSelect.value)}`;
+      // Keep the current page (hash) when jumping between accounts.
+      location.href = `/?account=${encodeURIComponent(els.accountSelect.value)}${location.hash}`;
     }
   });
 
@@ -374,8 +509,9 @@ function bindEvents() {
     }
   });
 
-  bindInsightSelection(document.querySelector('.analytics-grid'));
-  bindInsightSelection(document.querySelector('.audience-grid'));
+  // One delegated binding covers every chart on every page (there are multiple
+  // .analytics-grid wrappers since the multipage split - never bind just the first).
+  bindInsightSelection(document.querySelector('.main'));
 
   els.searchInput.addEventListener('input', () => {
     state.query = els.searchInput.value.trim().toLowerCase();
@@ -514,6 +650,7 @@ async function refreshNow(silent = false, force = true) {
   if (state.isRefreshing) return;
 
   state.isRefreshing = true;
+  startSyncLoader();
   if (!silent) {
     els.manualRefresh.disabled = true;
     els.manualRefresh.textContent = 'Syncing';
@@ -531,6 +668,7 @@ async function refreshNow(silent = false, force = true) {
     updateLiveBadge('error', 'Reconnecting');
   } finally {
     state.isRefreshing = false;
+    stopSyncLoader();
     if (!silent) {
       els.manualRefresh.disabled = false;
       els.manualRefresh.textContent = 'Sync now';
@@ -690,6 +828,37 @@ function renderSummary() {
       ${card.deltaNote ? `<div class="delta-note">${escapeHtml(card.deltaNote)}</div>` : ''}
     </article>
   `).join('');
+
+  animateMetricCountUp(summary, account);
+}
+
+// One-time finisher: the first populated render counts the KPI values up from 0.
+function animateMetricCountUp(summary, account) {
+  if (state.metricsAnimated) return;
+  state.metricsAnimated = true;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  const targets = [
+    isMetricKnown(summary.totalViews) ? metricNumber(summary.totalViews) : null,
+    isMetricKnown(summary.totalReach) ? metricNumber(summary.totalReach) : null,
+    isMetricKnown(summary.totalInteractions) ? metricNumber(summary.totalInteractions) : null,
+    null, // engagement quality is a percentage - it lands as-is
+    metricNumber(account.followers, null)
+  ];
+  const valueEls = document.querySelectorAll('#summary-grid .metric-value');
+  const startedAt = performance.now();
+  const duration = 700;
+
+  const tick = (now) => {
+    const t = Math.min(1, (now - startedAt) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    targets.forEach((target, index) => {
+      if (target === null || !valueEls[index]) return;
+      valueEls[index].textContent = compactNumber(Math.round(target * eased));
+    });
+    if (t < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 function renderCharts() {
@@ -699,7 +868,6 @@ function renderCharts() {
   renderFunnelChart(content);
   renderSavesSharesChart(content);
   renderHeatmapChart(content);
-  renderScatterChart(content);
   renderDistributionChart(content);
   renderEngagementMix(content);
   renderSelectedInsight();
@@ -711,7 +879,6 @@ function renderCharts() {
     els.funnelChart,
     els.savesSharesChart,
     els.heatmapChart,
-    els.scatterChart,
     els.distributionChart,
     els.engagementChart
   ].forEach((bodyEl) => setPanelDates(bodyEl, rangeLabel));
@@ -1478,6 +1645,67 @@ function buildAccountDailyReach(points, range) {
   return buckets;
 }
 
+function reachAccountWeeklyPoints() {
+  const weekly = state.data?.accountInsights?.weeklyReach;
+  if (!weekly?.available || !Array.isArray(weekly.series)) return [];
+  return weekly.series
+    .map((point) => ({
+      key: point.key,
+      label: point.label || `Wk of ${shortDate(point.key)}`,
+      shortLabel: shortDate(point.key),
+      value: metricNumber(point.value, null),
+      content: null
+    }))
+    .filter((point) => point.key && point.value !== null);
+}
+
+function reachContentWeeklyPoints(content) {
+  const grouped = new Map();
+  for (const item of content) {
+    const date = new Date(item.timestamp);
+    if (!Number.isFinite(date.getTime())) continue;
+    const monday = new Date(date);
+    monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+    const key = dayKey(monday);
+    const current = grouped.get(key) || { key, label: `Wk of ${shortDate(key)}`, shortLabel: shortDate(key), value: 0, content: 0 };
+    current.value += metricNumber(item.reach, 0);
+    current.content += 1;
+    grouped.set(key, current);
+  }
+  return [...grouped.values()].sort((a, b) => a.key.localeCompare(b.key)).slice(-12);
+}
+
+// "Jul 13 - Jul 19" for a Monday-start week key; the current week is capped at today.
+function weekSpanLabel(key) {
+  const start = parseKey(key);
+  if (!Number.isFinite(start.getTime())) return '';
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  const today = startOfDay(new Date());
+  const capped = end > today ? today : end;
+  return `${shortDate(dayKey(start))} - ${shortDate(dayKey(capped))}`;
+}
+
+function reachWeeklySource(content) {
+  const accountPoints = reachAccountWeeklyPoints();
+  if (accountPoints.length) {
+    return {
+      type: 'account',
+      points: accountPoints,
+      legend: 'Account reach by week',
+      note: 'Instagram Graph API reach total for each week (Monday start).',
+      source: 'Graph API /insights reach period=day total_value for each week window. This avoids summing daily reach across repeat accounts.'
+    };
+  }
+  return {
+    type: 'content',
+    points: reachContentWeeklyPoints(content),
+    legend: 'Loaded content fallback',
+    note: 'Fallback: loaded media reach grouped by publish week.',
+    source: 'Fallback from loaded media reach grouped by publish week.'
+  };
+}
+
 function reachAccountMonthlyPoints() {
   const monthly = state.data?.accountInsights?.monthlyReach;
   if (!monthly?.available || !Array.isArray(monthly.series)) return [];
@@ -1527,14 +1755,15 @@ function reachMonthlySource(content) {
 
 function updateAccountReachRangeLabel(range) {
   if (!els.reachRangeLabel) return;
-  const monthly = state.reachGranularity === 'month';
+  // Weekly and monthly use fixed 12-bucket windows; the calendar applies to daily only.
+  const fixedWindow = state.reachGranularity !== 'day';
   if (els.reachRangeTrigger) {
-    els.reachRangeTrigger.disabled = monthly;
+    els.reachRangeTrigger.disabled = fixedWindow;
     els.reachRangeTrigger.setAttribute('aria-expanded', 'false');
   }
-  if (monthly) {
+  if (fixedWindow) {
     toggleReachCalendar(false);
-    els.reachRangeLabel.textContent = 'Last 12 months';
+    els.reachRangeLabel.textContent = state.reachGranularity === 'month' ? 'Last 12 months' : 'Last 12 weeks';
     return;
   }
   if (!range) {
@@ -1549,6 +1778,10 @@ function updateAccountReachRangeLabel(range) {
 function renderAccountReachChart(content) {
   if (state.reachGranularity === 'month') {
     renderAccountMonthlyReachChart(content);
+    return;
+  }
+  if (state.reachGranularity === 'week') {
+    renderAccountWeeklyReachChart(content);
     return;
   }
   renderAccountDailyReachChart(content);
@@ -1581,6 +1814,29 @@ function renderAccountDailyReachChart(content) {
     ariaLabel: 'Reach by day',
     maxBarWidth: 30,
     labelCount: 8
+  });
+}
+
+function renderAccountWeeklyReachChart(content) {
+  const source = reachWeeklySource(content);
+  updateAccountReachRangeLabel(null);
+  if (els.reachTitle) els.reachTitle.textContent = 'Reach by week';
+
+  if (!source.points.length) {
+    els.reachChart.innerHTML = '<div class="chart-empty">No weekly reach data yet</div>';
+    return;
+  }
+
+  renderAccountReachBars(source.points, {
+    mode: 'week',
+    legend: source.legend,
+    note: source.note,
+    source: source.source,
+    sourceType: source.type,
+    axisLabel: 'Week',
+    ariaLabel: 'Reach by week',
+    maxBarWidth: 40,
+    labelCount: 12
   });
 }
 
@@ -1625,10 +1881,17 @@ function renderAccountReachBars(buckets, options) {
     if (options.sourceType === 'content') {
       metrics.push({ label: 'Items published', value: formatNumber(bucket.content) });
     }
-    const subtitle = options.sourceType === 'content'
+    let subtitle = options.sourceType === 'content'
       ? `${formatNumber(bucket.content)} item${bucket.content === 1 ? '' : 's'} published`
       : 'Account reach reported by Instagram';
-    const title = options.mode === 'month' ? `Reach in ${bucket.label}` : `Reach on ${bucket.label}`;
+    if (options.mode === 'week') {
+      const span = weekSpanLabel(bucket.key);
+      if (span) {
+        metrics.push({ label: 'Week', value: span });
+        if (options.sourceType !== 'content') subtitle = span;
+      }
+    }
+    const title = options.mode === 'day' ? `Reach on ${bucket.label}` : `Reach in ${bucket.label}`;
     return `<rect class="chart-bar reach-bar chart-click" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="3" role="button" tabindex="0" aria-label="${escapeAttribute(`${bucket.label}: ${formatNumber(bucket.value)} reach`)}" ${insightAttrs({
       id: `reach-${options.mode}-${bucket.key}`,
       title,
@@ -1648,7 +1911,7 @@ function renderAccountReachBars(buckets, options) {
 
   const labelEvery = Math.max(1, Math.ceil(buckets.length / (options.labelCount || 8)));
   const labels = buckets.map((bucket, indexNo) => (indexNo === 0 || indexNo === buckets.length - 1 || indexNo % labelEvery === 0)
-    ? `<text class="chart-label" x="${padding.left + indexNo * slot + slot / 2}" y="${height - 12}" text-anchor="middle">${escapeHtml(bucket.label)}</text>`
+    ? `<text class="chart-label" x="${padding.left + indexNo * slot + slot / 2}" y="${height - 12}" text-anchor="middle">${escapeHtml(bucket.shortLabel || bucket.label)}</text>`
     : '').join('');
 
   els.reachChart.innerHTML = `
@@ -1668,7 +1931,7 @@ function renderAccountReachBars(buckets, options) {
 
 function toggleReachCalendar(force) {
   if (!els.reachCalendar) return;
-  if (state.reachGranularity === 'month') {
+  if (state.reachGranularity !== 'day') {
     els.reachCalendar.setAttribute('hidden', '');
     els.reachRangeTrigger?.setAttribute('aria-expanded', 'false');
     return;
@@ -1776,10 +2039,10 @@ function setPanelDates(bodyEl, label) {
 function renderEngagementMix(content) {
   const totals = metricTotals(content);
   const segments = [
-    { key: 'likes', label: 'Likes', value: metricNumber(totals.likes, 0), color: 'var(--primary-dark)', cls: 'likes' },
-    { key: 'comments', label: 'Comments', value: metricNumber(totals.comments, 0), color: 'var(--amber)', cls: 'comments' },
-    { key: 'saves', label: 'Saves', value: metricNumber(totals.saves, 0), color: 'var(--blue)', cls: 'saves' },
-    { key: 'shares', label: 'Shares', value: metricNumber(totals.shares, 0), color: 'var(--coral)', cls: 'shares' }
+    { key: 'likes', label: 'Likes', value: metricNumber(totals.likes, 0), color: '#111111', cls: 'likes' },
+    { key: 'comments', label: 'Comments', value: metricNumber(totals.comments, 0), color: '#b1b1b1', cls: 'comments' },
+    { key: 'saves', label: 'Saves', value: metricNumber(totals.saves, 0), color: '#ed1b24', cls: 'saves' },
+    { key: 'shares', label: 'Shares', value: metricNumber(totals.shares, 0), color: '#595959', cls: 'shares' }
   ];
   const total = segments.reduce((sum, seg) => sum + seg.value, 0);
 
@@ -1946,7 +2209,7 @@ function renderHeatmapChart(content) {
             id: `heat-${dayIndex}-${windowIndex}`,
             title: `${day} ${window.label}`,
             subtitle: window.time,
-            source: 'Average views calculated from loaded content published in this day/time slot. Items without view data are counted separately, not averaged as zero.',
+            source: 'Average views calculated from loaded content published in this day/time slot. Items without view data are counted separately, not averaged as zero. An average of 0 means Meta currently reports 0 views for the post(s) here - typical for brand-new posts that are still gathering data.',
             metrics: heatmapInsightMetrics(slot)
           })}>
             <strong>${escapeHtml(heatmapValueLabel(slot))}</strong>
@@ -1959,7 +2222,7 @@ function renderHeatmapChart(content) {
 }
 
 function emptyPostingSlot(day, window) {
-  return { day, window, count: 0, contentCount: 0, viewsCount: 0, views: 0, averageViews: null };
+  return { day, window, count: 0, contentCount: 0, viewsCount: 0, views: 0, averageViews: null, items: [] };
 }
 
 function heatmapValueLabel(slot) {
@@ -1985,67 +2248,29 @@ function heatmapInsightMetrics(slot) {
     { label: 'Content', value: pluralLabel(slot.contentCount, 'item') }
   ];
   if (slot.contentCount) {
+    if (slot.viewsCount) metrics.push({ label: 'Total views', value: compactNumber(slot.views) });
     metrics.push({ label: 'With view data', value: pluralLabel(slot.viewsCount, 'item') });
     const unavailable = slot.contentCount - slot.viewsCount;
     if (unavailable > 0) metrics.push({ label: 'Missing views', value: pluralLabel(unavailable, 'item') });
+
+    // Name the actual posts behind the cell (top 3 by views) so an odd number is explainable.
+    const ranked = [...(slot.items || [])]
+      .sort((a, b) => metricNumber(b.views, -1) - metricNumber(a.views, -1))
+      .slice(0, 3);
+    ranked.forEach((item, index) => {
+      const views = isMetricKnown(item.views) ? `${compactNumber(item.views)} views` : 'views unavailable';
+      metrics.push({
+        label: ranked.length === 1 ? 'Post' : `Post ${index + 1}`,
+        value: `${shortCaption(item.caption)} - ${views} - ${relativeDate(item.timestamp)}`
+      });
+    });
   }
   return metrics;
 }
 
-function renderScatterChart(content) {
-  const points = content.filter((item) => isMetricKnown(item.reach) && isMetricKnown(item.engagementRate));
-  if (!points.length) {
-    els.scatterChart.innerHTML = '<div class="chart-empty">Reach or engagement unavailable</div>';
-    return;
-  }
-
-  const width = 430;
-  const height = 230;
-  const padding = { top: 18, right: 18, bottom: 34, left: 48 };
-  const innerWidth = width - padding.left - padding.right;
-  const innerHeight = height - padding.top - padding.bottom;
-  const maxReach = Math.max(1, ...points.map((item) => metricNumber(item.reach)));
-  const maxEngagement = Math.max(0.01, ...points.map((item) => metricNumber(item.engagementRate)));
-  const maxViews = Math.max(1, ...points.map((item) => metricNumber(item.views)));
-  const circles = points.slice(0, 160).map((item) => {
-    const x = padding.left + (metricNumber(item.reach) / maxReach) * innerWidth;
-    const y = padding.top + innerHeight - (metricNumber(item.engagementRate) / maxEngagement) * innerHeight;
-    const radius = 3 + (metricNumber(item.views) / maxViews) * 7;
-    return `<circle class="scatter-point chart-click ${escapeAttribute(item.contentType)}" cx="${x}" cy="${y}" r="${radius}" role="button" tabindex="0" aria-label="${escapeAttribute(`${item.caption}: ${compactNumber(item.reach)} reach, ${percent(item.engagementRate)} engagement`)}" ${insightAttrs({
-      id: `scatter-${item.id}`,
-      title: item.caption,
-      subtitle: `${item.contentTypeLabel || 'Content'} quality position`,
-      source: 'X-axis is reach, Y-axis is engagement rate, dot size is views.',
-      metrics: [
-        { label: 'Reach', value: metricCompact(item.reach) },
-        { label: 'Engagement', value: metricPercent(item.engagementRate) },
-        { label: 'Views', value: metricCompact(item.views) },
-        { label: 'Score', value: formatNumber(item.contentScore || 0) }
-      ]
-    })}><title>${escapeHtml(item.caption)} - ${compactNumber(item.reach)} reach - ${percent(item.engagementRate)}</title></circle>`;
-  }).join('');
-
-  els.scatterChart.innerHTML = `
-    <div class="chart-legend compact-legend">
-      <span><i class="legend-line"></i>Reels</span>
-      <span><i class="legend-save"></i>Videos</span>
-      <span><i class="legend-share"></i>Images</span>
-      <span><i class="legend-amber"></i>Carousels</span>
-    </div>
-    <svg class="mini-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Reach versus engagement scatter chart">
-      <line class="chart-grid" x1="${padding.left}" y1="${padding.top + innerHeight}" x2="${padding.left + innerWidth}" y2="${padding.top + innerHeight}"></line>
-      <line class="chart-grid" x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${padding.top + innerHeight}"></line>
-      <line class="chart-grid light" x1="${padding.left}" y1="${padding.top + innerHeight / 2}" x2="${padding.left + innerWidth}" y2="${padding.top + innerHeight / 2}"></line>
-      <line class="chart-grid light" x1="${padding.left + innerWidth / 2}" y1="${padding.top}" x2="${padding.left + innerWidth / 2}" y2="${padding.top + innerHeight}"></line>
-      ${circles}
-      <text class="chart-label" x="${padding.left}" y="${height - 8}">0 reach</text>
-      <text class="chart-label" x="${padding.left + innerWidth}" y="${height - 8}" text-anchor="end">${compactNumber(maxReach)} reach</text>
-      <text class="chart-label" x="${padding.left - 8}" y="${padding.top + innerHeight}" text-anchor="end">0%</text>
-      <text class="chart-label" x="${padding.left - 8}" y="${padding.top + 4}" text-anchor="end">${percent(maxEngagement)}</text>
-      <text class="chart-axis-label" x="${padding.left + innerWidth / 2}" y="${height - 22}" text-anchor="middle">Reach</text>
-      <text class="chart-axis-label" x="14" y="${padding.top + innerHeight / 2}" text-anchor="middle" transform="rotate(-90 14 ${padding.top + innerHeight / 2})">Engagement rate</text>
-    </svg>
-  `;
+function shortCaption(value) {
+  const text = String(value || 'Untitled').trim();
+  return text.length > 34 ? `${text.slice(0, 33)}…` : text;
 }
 
 function renderDistributionChart(content) {
@@ -2262,7 +2487,7 @@ function countryName(code) {
   return COUNTRY_NAMES[code] || code;
 }
 
-const GENDER_COLORS = { F: 'var(--primary)', M: 'var(--blue)', U: 'var(--amber)' };
+const GENDER_COLORS = { F: '#111111', M: '#b1b1b1', U: '#ed1b24' };
 
 function renderAudience() {
   renderAccountInsights();
@@ -2798,10 +3023,10 @@ function buildReportModel() {
   const totals = metricTotals(content);
   const mixTotal = totals.likes + totals.comments + totals.saves + totals.shares;
   const segments = [
-    { key: 'likes', label: 'Likes', value: totals.likes, color: '#46431f' },
-    { key: 'comments', label: 'Comments', value: totals.comments, color: '#b88a18' },
-    { key: 'saves', label: 'Saves', value: totals.saves, color: '#2f6fb0' },
-    { key: 'shares', label: 'Shares', value: totals.shares, color: '#c0573a' }
+    { key: 'likes', label: 'Likes', value: totals.likes, color: '#111111' },
+    { key: 'comments', label: 'Comments', value: totals.comments, color: '#b1b1b1' },
+    { key: 'saves', label: 'Saves', value: totals.saves, color: '#ed1b24' },
+    { key: 'shares', label: 'Shares', value: totals.shares, color: '#595959' }
   ].map((seg) => ({ ...seg, share: mixTotal ? seg.value / mixTotal : 0 }));
   const dominant = segments.slice().sort((a, b) => b.value - a.value)[0];
 
@@ -2923,7 +3148,7 @@ function buildReportHtml(model) {
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Reels Report - @${esc(model.username)}</title>
 <style>
-  :root{--ink:#26261d;--muted:#6b6b5e;--line:#e4e4dc;--surface:#f7f7f3;--olive:#5b6b2f;--olived:#3f4a22;}
+  :root{--ink:#0a0a0a;--muted:#6e6e6e;--line:#e6e6e6;--surface:#f5f5f5;--olive:#ed1b24;--olived:#c8121b;}
   *{box-sizing:border-box;}
   @page{size:A4;margin:16mm;}
   html,body{margin:0;padding:0;}
@@ -2931,7 +3156,7 @@ function buildReportHtml(model) {
   .doc{max-width:760px;margin:0 auto;}
   .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid var(--olive);padding-bottom:14px;margin-bottom:18px;}
   .brand{display:flex;gap:12px;align-items:center;}
-  .mark{width:38px;height:38px;border-radius:9px;background:var(--olived);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;}
+  .mark{width:38px;height:38px;border-radius:9px;background:var(--olived);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:500;font-size:20px;}
   h1{font-size:18px;margin:0;letter-spacing:-0.01em;}
   .sub{color:var(--muted);font-size:12px;margin-top:2px;}
   .head-right{text-align:right;color:var(--muted);font-size:11px;}
@@ -2940,7 +3165,7 @@ function buildReportHtml(model) {
   .kpis{display:flex;gap:10px;}
   .kpi{flex:1;border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:var(--surface);}
   .kpi-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.05em;}
-  .kpi-value{display:block;font-size:21px;font-weight:800;margin-top:3px;font-variant-numeric:tabular-nums;}
+  .kpi-value{display:block;font-size:21px;font-weight:500;margin-top:3px;font-variant-numeric:tabular-nums;}
   .kpi-exact{color:var(--muted);font-size:10px;}
   .mixbar{display:flex;height:16px;border-radius:8px;overflow:hidden;border:1px solid var(--line);}
   .mixbar span{display:block;}
@@ -3257,6 +3482,7 @@ function buildPostingSlots(content) {
 
     slot.contentCount += 1;
     slot.count = slot.contentCount;
+    slot.items.push(item);
     if (!isMetricKnown(item.views)) return;
 
     slot.viewsCount += 1;

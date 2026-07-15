@@ -182,14 +182,6 @@ Interaction: click cell → insight (metrics: **"Average views" / "Content" / "W
 "Missing views"**).
 Empty: **"Waiting for content"**.
 
-**G6 · Reach vs engagement scatter** — eyebrow **"Quality map"**, title **"Reach vs engagement"**.
-Type: scatter (≤160 points). X = reach · Y = engagement rate % · dot size = views · dot color
-= content type. Legend: **"Reels / Videos / Images / Carousels"**. Corner axis labels:
-**"0 reach"**, max reach, **"0%"**, max %. Axis titles: **"Reach"** / **"Engagement rate"**.
-Interaction: click dot → insight (Reach / Engagement / Views / Score; source: *"X-axis is
-reach, Y-axis is engagement rate, dot size is views."*).
-Empty: **"Reach or engagement unavailable"**.
-
 **G7 · Views distribution** — eyebrow **"Distribution"**, title **"Views spread"**.
 Type: histogram, 6 equal view-range buckets. X = view range (e.g. `0-3.2M`) · Y/bar height =
 number of posts (count printed on top).
@@ -506,7 +498,7 @@ comparison table · FAQ accordion · CTA band.
 - **Table** — sortable headers, zebra, sticky header, row hover/selected, mobile card
   fallback, CSV export.
 - **Chart primitives** — grouped bar, vertical bar, line+area, stacked horizontal bar,
-  funnel bar, donut, scatter, histogram, heatmap grid, mirrored gain/loss bars + total line,
+  funnel bar, donut, histogram, heatmap grid, mirrored gain/loss bars + total line,
   sparkline — all with tooltip, click-to-inspect (feeds Selected insight), and
   empty/loading/error states. Series colors per §1.
 - **Feedback** — toast, inline aria-live status line, banner/notice (info/warn/error),

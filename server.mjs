@@ -989,6 +989,35 @@ async function fetchAccountInsights(activeConfig) {
       : { available: false, reason: 'Meta returned no monthly reach totals for this account.' };
   };
 
+  // One total_value call per week window, like monthlyReachFor - a true unique-accounts
+  // reach per week instead of summing daily reach across repeat viewers.
+  const weeklyReachFor = async (count = 12) => {
+    const windows = calendarWeekWindows(count);
+    const series = [];
+    await Promise.all(windows.map(async (window) => {
+      try {
+        const response = await graphGet(`/${id}/insights`, {
+          metric: 'reach',
+          period: 'day',
+          metric_type: 'total_value',
+          since: window.since,
+          until: window.until
+        }, activeConfig);
+        const row = (response.data || []).find((item) => item.name === 'reach');
+        const value = row?.total_value?.value;
+        if (typeof value === 'number') {
+          series.push({ ...window, value });
+        }
+      } catch {
+        // Skip a week if Meta declines that specific range.
+      }
+    }));
+    series.sort((a, b) => a.key.localeCompare(b.key));
+    return series.length
+      ? { available: true, weeks: count, series }
+      : { available: false, reason: 'Meta returned no weekly reach totals for this account.' };
+  };
+
   const dailyPerformanceFor = async (dailyReach, days = 90) => {
     const reachSeries = (dailyReach?.series || [])
       .filter((point) => point.endTime && point.date)
@@ -1064,16 +1093,17 @@ async function fetchAccountInsights(activeConfig) {
       if (Object.keys(followType).length) reachByFollowType[w.key] = followType;
     }));
     const dailyReachTask = dailyReachFor(DAILY_HISTORY_DAYS + 1);
+    const weeklyReachTask = weeklyReachFor(12);
     const monthlyReachTask = monthlyReachFor(12);
 
     await windowTask;
     const dailyReach = await dailyReachTask;
     const dailyPerformanceTask = dailyPerformanceFor(dailyReach, DAILY_HISTORY_DAYS);
-    const [dailyPerformance, monthlyReach] = await Promise.all([dailyPerformanceTask, monthlyReachTask]);
+    const [dailyPerformance, weeklyReach, monthlyReach] = await Promise.all([dailyPerformanceTask, weeklyReachTask, monthlyReachTask]);
 
     const windows = WINDOWS.filter((w) => byWindow[w.key]);
     const defaultWindow = (windows.find((w) => w.key === 'last_30_days') || windows[windows.length - 1])?.key || null;
-    const result = windows.length || dailyReach.available || monthlyReach.available || dailyPerformance.available
+    const result = windows.length || dailyReach.available || weeklyReach.available || monthlyReach.available || dailyPerformance.available
       ? {
         available: true,
         windows: windows.map((w) => ({ key: w.key, label: w.label })),
@@ -1082,6 +1112,7 @@ async function fetchAccountInsights(activeConfig) {
         reachByFollowType,
         dailyPerformance,
         dailyReach,
+        weeklyReach,
         monthlyReach
       }
       : { available: false, reason: 'Account-level insights are unavailable for this account or API version.' };
@@ -1235,6 +1266,28 @@ function parseInsightTimeSeries(data, metric) {
       };
     })
     .filter((point) => point.date && point.value !== null);
+}
+
+// Last `count` calendar weeks (Monday start, UTC); the current partial week runs to now.
+function calendarWeekWindows(count) {
+  const now = new Date();
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const mondayOffset = (today.getUTCDay() + 6) % 7;
+  const currentWeekStart = new Date(today);
+  currentWeekStart.setUTCDate(today.getUTCDate() - mondayOffset);
+  return Array.from({ length: count }, (_, index) => {
+    const start = new Date(currentWeekStart);
+    start.setUTCDate(currentWeekStart.getUTCDate() - (count - 1 - index) * 7);
+    const next = new Date(start);
+    next.setUTCDate(start.getUTCDate() + 7);
+    const untilDate = index === count - 1 ? now : next;
+    return {
+      key: start.toISOString().slice(0, 10),
+      label: `Wk of ${new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(start)}`,
+      since: Math.floor(start.getTime() / 1000),
+      until: Math.floor(untilDate.getTime() / 1000)
+    };
+  });
 }
 
 function calendarMonthWindows(count) {

@@ -1,30 +1,35 @@
-:root {
+﻿:root {
   color-scheme: light;
-  --bg: oklch(1 0 0);
-  --surface: oklch(0.985 0.004 110);
-  --surface-raised: oklch(0.965 0.008 110);
-  --ink: oklch(0.2 0.025 115);
-  --muted: oklch(0.43 0.025 115);
-  --subtle: oklch(0.58 0.018 115);
-  --border: oklch(0.9 0.012 110);
-  --border-strong: oklch(0.82 0.018 110);
-  --primary: oklch(0.52 0.11 110);
-  --primary-dark: oklch(0.36 0.09 112);
-  --primary-soft: oklch(0.92 0.052 110);
-  --coral: oklch(0.6 0.15 30);
-  --coral-soft: oklch(0.93 0.045 30);
-  --blue: oklch(0.55 0.12 245);
-  --blue-soft: oklch(0.93 0.035 245);
-  --amber: oklch(0.72 0.14 80);
-  --amber-soft: oklch(0.95 0.055 80);
-  --success: oklch(0.5 0.12 150);
-  --danger: oklch(0.58 0.15 25);
-  --shadow: 0 8px 24px oklch(0.22 0.025 115 / 0.08);
-  --radius: 8px;
-  --radius-small: 6px;
+  /* Multia brand: Red #ED1B24, Black, White, Dark Grey #4E4E4E, Mid Grey #B1B1B1, Light Grey #F5F5F5.
+     Charts draw in black + greys; red is reserved for accents that mean something:
+     the primary action, live signals, selection, breakout, saves, and the heatmap.
+     Green/warn stay functional-only (status dots, notices). */
+  --bg: #ffffff;
+  --surface: #f5f5f5;
+  --surface-raised: #ececec;
+  --ink: #0a0a0a;
+  --muted: #4e4e4e;
+  --subtle: #6e6e6e;
+  --border: #e6e6e6;
+  --border-strong: #b1b1b1;
+  --primary: #ed1b24;
+  --primary-dark: #c8121b;
+  --primary-soft: #fdeaea;
+  --coral: #595959;
+  --coral-soft: #ebebeb;
+  --blue: #1a1a1a;
+  --blue-soft: #ececec;
+  --amber: #b1b1b1;
+  --amber-soft: #f0f0f0;
+  --warn: #e0a03c;
+  --success: #1f8a3d;
+  --danger: #d1141d;
+  --shadow: 0 8px 24px rgb(0 0 0 / 0.07);
+  --radius: 12px;
+  --radius-small: 8px;
   --sidebar-width: 248px;
-  --focus: 0 0 0 3px oklch(0.78 0.12 110 / 0.34);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --focus: 0 0 0 3px rgb(237 27 36 / 0.28);
+  font-family: "Articulat CF", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 * {
@@ -40,7 +45,7 @@ body {
   min-height: 100vh;
   margin: 0;
   background:
-    linear-gradient(180deg, oklch(0.985 0.004 110), var(--bg) 340px);
+    linear-gradient(180deg, #f9f9f9, var(--bg) 340px);
   color: var(--ink);
 }
 
@@ -83,7 +88,7 @@ a {
   height: 100vh;
   padding: 20px 16px;
   border-right: 1px solid var(--border);
-  background: oklch(0.975 0.006 110);
+  background: #fafafa;
 }
 
 .brand {
@@ -94,15 +99,18 @@ a {
   margin-bottom: 28px;
 }
 
+/* Official logo mark, unboxed - the sidebar stays quiet so red keeps its meaning. */
 .brand-mark {
   display: grid;
   width: 36px;
   height: 36px;
   place-items: center;
-  border-radius: var(--radius);
-  background: var(--primary-dark);
-  color: var(--bg);
-  font-weight: 800;
+}
+
+.brand-mark img {
+  display: block;
+  width: 28px;
+  height: auto;
 }
 
 .brand strong,
@@ -135,17 +143,18 @@ a {
   border-radius: var(--radius-small);
   color: var(--muted);
   font-size: 0.9rem;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .nav-item:hover {
-  background: oklch(0.94 0.012 110);
+  background: var(--surface-raised);
   color: var(--ink);
 }
 
 .nav-item.active {
-  background: var(--primary-soft);
-  color: var(--primary-dark);
+  background: var(--surface-raised);
+  box-shadow: inset 3px 0 0 var(--primary);
+  color: var(--ink);
 }
 
 .nav-icon {
@@ -167,7 +176,7 @@ a {
   margin-top: 3px;
   color: var(--muted);
   font-size: 0.74rem;
-  font-weight: 720;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
@@ -188,7 +197,7 @@ a {
   margin: 0;
   color: var(--subtle);
   font-size: 0.76rem;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .account-title-row {
@@ -237,14 +246,14 @@ a {
   background: var(--bg);
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: var(--amber);
+  background: var(--warn);
 }
 
 .connection-chip.connected .status-dot,
@@ -254,7 +263,7 @@ a {
 
 .connection-chip.demo .status-dot,
 .live-badge.demo::before {
-  background: var(--blue);
+  background: var(--border-strong);
 }
 
 .connection-chip.error .status-dot,
@@ -267,7 +276,7 @@ a {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: var(--amber);
+  background: var(--warn);
 }
 
 .live-badge.connected::before,
@@ -306,8 +315,8 @@ a {
   border: 1px solid var(--border);
   border-radius: 50%;
   background: var(--surface-raised);
-  color: var(--primary-dark);
-  font-weight: 800;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .avatar img {
@@ -323,18 +332,36 @@ p {
   text-wrap: pretty;
 }
 
+/* Styleguide: Articulat CF, Medium + Regular only. Headings medium with tightened
+   tracking (-2%), body regular at 130% - hierarchy comes from size and color. */
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 500;
+}
+
+b,
+strong {
+  font-weight: 500;
+}
+
 h1 {
   margin: 2px 0 4px;
   font-size: 1.35rem;
-  line-height: 1.2;
-  letter-spacing: 0;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
 }
 
 h2 {
   margin: 4px 0 0;
   font-size: 1.08rem;
-  line-height: 1.25;
-  letter-spacing: 0;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+p {
+  line-height: 1.3;
 }
 
 .meta-line {
@@ -357,7 +384,7 @@ h2 {
   gap: 8px;
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .field-inline {
@@ -387,14 +414,14 @@ input {
 }
 
 input::placeholder {
-  color: oklch(0.48 0.025 115);
+  color: #8a8a8a;
 }
 
 .primary-button,
 .secondary-button {
   min-height: 36px;
   padding: 0 14px;
-  font-weight: 760;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -405,7 +432,7 @@ input::placeholder {
 }
 
 .primary-button:hover {
-  background: oklch(0.31 0.085 112);
+  background: #a90e16;
 }
 
 .secondary-button {
@@ -433,10 +460,10 @@ input::placeholder {
 .notice {
   margin-bottom: 16px;
   padding: 12px 14px;
-  border: 1px solid oklch(0.82 0.07 80);
+  border: 1px solid #ecd2a1;
   border-radius: var(--radius);
-  background: var(--amber-soft);
-  color: oklch(0.32 0.06 80);
+  background: #fdf6e7;
+  color: #7a5410;
   font-size: 0.9rem;
 }
 
@@ -497,7 +524,7 @@ input::placeholder {
   background: var(--surface);
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 780;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -508,9 +535,9 @@ input::placeholder {
 }
 
 .config-state.demo {
-  border-color: oklch(0.78 0.055 245);
-  background: var(--blue-soft);
-  color: oklch(0.35 0.08 245);
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
 }
 
 .connect-body {
@@ -531,7 +558,7 @@ input::placeholder {
   gap: 6px;
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .field-stack input {
@@ -567,7 +594,7 @@ input::placeholder {
 .token-guide .guide-title {
   margin-bottom: 4px;
   color: var(--ink);
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .config-feedback {
@@ -578,12 +605,12 @@ input::placeholder {
 
 .config-feedback.success {
   color: var(--success);
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .config-feedback.error {
   color: var(--danger);
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .discovered-accounts {
@@ -675,14 +702,14 @@ input::placeholder {
   margin: 0;
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .metric-value {
   margin: 14px 0 3px;
   font-size: 2rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 820;
+  font-weight: 500;
   line-height: 1;
 }
 
@@ -691,7 +718,7 @@ input::placeholder {
   color: var(--muted);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 720;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -712,9 +739,9 @@ input::placeholder {
   align-items: center;
   padding: 0 8px;
   border-radius: 999px;
-  background: var(--primary-soft);
-  color: var(--primary-dark);
-  font-weight: 800;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -810,14 +837,14 @@ input::placeholder {
   background: transparent;
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 800;
+  font-weight: 500;
   cursor: pointer;
 }
 
 .segmented button.active {
   background: var(--bg);
   color: var(--ink);
-  box-shadow: 0 1px 4px oklch(0.22 0.025 115 / 0.1);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.08);
 }
 
 .chart-wrap {
@@ -836,7 +863,7 @@ input::placeholder {
 .chart-note {
   color: var(--muted);
   font-size: 0.78rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .chart-legend {
@@ -847,7 +874,7 @@ input::placeholder {
   margin-bottom: 8px;
   color: var(--muted);
   font-size: 0.78rem;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .compact-legend {
@@ -865,12 +892,12 @@ input::placeholder {
   width: 18px;
   height: 8px;
   border-radius: 999px;
-  background: var(--primary-dark);
+  background: #111111;
 }
 
 .legend-line {
   height: 3px !important;
-  background: var(--primary-dark) !important;
+  background: #111111 !important;
 }
 
 .legend-bar {
@@ -878,11 +905,11 @@ input::placeholder {
 }
 
 .legend-bar.views {
-  background: var(--primary-dark) !important;
+  background: #111111 !important;
 }
 
 .legend-bar.reach {
-  background: var(--blue) !important;
+  background: #595959 !important;
 }
 
 .legend-bar.interactions {
@@ -890,16 +917,17 @@ input::placeholder {
 }
 
 .legend-save {
-  background: var(--blue) !important;
+  background: var(--primary) !important;
 }
 
 .legend-share {
-  background: var(--coral) !important;
+  background: #595959 !important;
 }
 
 .legend-amber {
   background: var(--amber) !important;
 }
+
 
 .chart-svg {
   display: block;
@@ -919,14 +947,14 @@ input::placeholder {
 
 .chart-line {
   fill: none;
-  stroke: var(--primary-dark);
+  stroke: #111111;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 3;
 }
 
 .chart-area {
-  fill: color-mix(in oklch, var(--primary-soft), transparent 25%);
+  fill: rgb(17 17 17 / 0.06);
 }
 
 .chart-bar {
@@ -940,11 +968,11 @@ input::placeholder {
 }
 
 .trend-bar.views {
-  fill: var(--primary-dark);
+  fill: #111111;
 }
 
 .trend-bar.reach {
-  fill: var(--blue);
+  fill: #595959;
 }
 
 .trend-bar.interactions {
@@ -977,7 +1005,7 @@ input::placeholder {
 }
 
 .legend-bar.reach {
-  background: var(--blue);
+  background: #595959;
 }
 
 /* Engagement mix donut */
@@ -1000,14 +1028,14 @@ input::placeholder {
 .donut-center {
   fill: var(--ink);
   font-size: 22px;
-  font-weight: 800;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
 .donut-sub {
   fill: var(--muted);
   font-size: 11px;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .mix-legend {
@@ -1042,7 +1070,7 @@ input::placeholder {
   flex: 1;
   color: var(--muted);
   font-size: 0.84rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .mix-row strong {
@@ -1052,7 +1080,7 @@ input::placeholder {
 
 .mix-row strong small {
   color: var(--muted);
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .mix-dot {
@@ -1063,19 +1091,19 @@ input::placeholder {
 }
 
 .mix-likes {
-  background: var(--primary-dark);
+  background: #111111;
 }
 
 .mix-comments {
-  background: var(--amber);
+  background: #b1b1b1;
 }
 
 .mix-saves {
-  background: var(--blue);
+  background: var(--primary);
 }
 
 .mix-shares {
-  background: var(--coral);
+  background: #595959;
 }
 
 /* ---- Audience page ---- */
@@ -1123,7 +1151,7 @@ input::placeholder {
 .fg-label {
   color: var(--muted);
   font-size: 0.78rem;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .fg-value {
@@ -1156,7 +1184,7 @@ input::placeholder {
 .net-chip span {
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .net-chip strong {
@@ -1169,7 +1197,7 @@ input::placeholder {
   margin-top: 2px;
   color: var(--subtle);
   font-size: 0.68rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .net-chip.up strong {
@@ -1204,7 +1232,7 @@ input::placeholder {
 .fg-legend {
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .fg-summary strong {
@@ -1215,7 +1243,7 @@ input::placeholder {
 .fg-summary small {
   color: var(--subtle);
   font-size: 0.68rem;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .fg-legend {
@@ -1235,7 +1263,7 @@ input::placeholder {
   width: 16px;
   height: 7px;
   border-radius: 999px;
-  background: var(--primary-dark);
+  background: #111111;
 }
 
 .fg-legend i.gained {
@@ -1254,14 +1282,14 @@ input::placeholder {
 
 .fg-line {
   fill: none;
-  stroke: var(--primary-dark);
+  stroke: #111111;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2.6;
 }
 
 .fg-point {
-  fill: var(--primary-dark);
+  fill: #111111;
   stroke: var(--bg);
   stroke-width: 1.5;
 }
@@ -1317,7 +1345,7 @@ input::placeholder {
 
 .gx-metric-head span {
   font-size: 0.85rem;
-  font-weight: 780;
+  font-weight: 500;
 }
 
 .gx-metric-head small {
@@ -1340,7 +1368,7 @@ input::placeholder {
   gap: 7px;
   color: var(--muted);
   font-size: 0.82rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .gx-name i {
@@ -1361,7 +1389,7 @@ input::placeholder {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: var(--primary);
+  background: #111111;
   transition: width 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -1373,7 +1401,7 @@ input::placeholder {
 
 .gx-row strong small {
   color: var(--muted);
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .gx-views {
@@ -1400,7 +1428,7 @@ input::placeholder {
 .gx-views span {
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .gx-views strong {
@@ -1421,7 +1449,7 @@ input::placeholder {
   margin: 0 0 6px;
   color: var(--muted);
   font-size: 0.74rem;
-  font-weight: 800;
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1453,7 +1481,7 @@ input::placeholder {
 .ai-tile span {
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .ai-tile strong {
@@ -1483,7 +1511,7 @@ input::placeholder {
 .ai-split-head span {
   color: var(--muted);
   font-size: 0.74rem;
-  font-weight: 800;
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1507,11 +1535,11 @@ input::placeholder {
 }
 
 .ai-split-bar .seg.non-follower {
-  background: var(--primary);
+  background: #111111;
 }
 
 .ai-split-bar .seg.follower {
-  background: var(--blue);
+  background: #b1b1b1;
 }
 
 .ai-split-legend {
@@ -1536,11 +1564,11 @@ input::placeholder {
 }
 
 .ai-split-legend i.non-follower {
-  background: var(--primary);
+  background: #111111;
 }
 
 .ai-split-legend i.follower {
-  background: var(--blue);
+  background: #b1b1b1;
 }
 
 .ai-split-legend span {
@@ -1561,7 +1589,7 @@ input::placeholder {
 }
 
 .chart-point {
-  fill: var(--primary-dark);
+  fill: #111111;
 }
 
 /* Daily-reach date range picker */
@@ -1634,7 +1662,7 @@ input::placeholder {
   padding: 4px 0;
   color: var(--muted);
   font-size: 0.68rem;
-  font-weight: 780;
+  font-weight: 500;
   text-align: center;
 }
 
@@ -1724,7 +1752,7 @@ input::placeholder {
   background: var(--surface);
   color: var(--ink);
   font-size: 0.78rem;
-  font-weight: 740;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -1732,38 +1760,22 @@ input::placeholder {
   background: var(--surface-raised);
 }
 
-.scatter-point {
-  fill: var(--primary-dark);
-  opacity: 0.74;
-}
-
-.scatter-point.video {
-  fill: var(--blue);
-}
-
-.scatter-point.image {
-  fill: var(--coral);
-}
-
-.scatter-point.carousel {
-  fill: var(--amber);
-}
 
 .chart-label {
   fill: var(--muted);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .chart-axis-label,
 .chart-value-label {
   fill: var(--ink);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .chart-value-label {
-  fill: var(--primary-dark);
+  fill: var(--ink);
 }
 
 .chart-click {
@@ -1779,7 +1791,7 @@ input::placeholder {
 svg .chart-click:hover,
 svg .chart-click:focus-visible,
 svg .chart-click.selected {
-  filter: drop-shadow(0 0 0.22rem oklch(0.36 0.09 112 / 0.4));
+  filter: drop-shadow(0 0 0.22rem rgb(237 27 36 / 0.35));
   stroke: var(--ink);
   stroke-width: 2;
 }
@@ -1837,7 +1849,7 @@ svg .chart-click.selected {
   color: var(--primary-dark);
   font-size: 0.86rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 820;
+  font-weight: 500;
 }
 
 .activity-copy,
@@ -1865,7 +1877,7 @@ svg .chart-click.selected {
 .mix-row span {
   color: var(--muted);
   font-size: 0.86rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .mix-row strong {
@@ -1904,7 +1916,7 @@ svg .chart-click.selected {
   margin-top: 1px;
   color: var(--muted);
   font-size: 0.68rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .bar-row:hover,
@@ -1937,15 +1949,15 @@ svg .chart-click.selected {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--primary-dark);
+  background: #111111;
 }
 
 .bar-track .bar-save {
-  background: var(--blue);
+  background: var(--primary);
 }
 
 .bar-track .bar-share {
-  background: var(--coral);
+  background: #595959;
 }
 
 .heatmap {
@@ -1958,7 +1970,7 @@ svg .chart-click.selected {
 .heatmap b {
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 800;
+  font-weight: 500;
   text-align: center;
 }
 
@@ -1981,8 +1993,8 @@ svg .chart-click.selected {
   padding: 4px 2px;
   border: 1px solid transparent;
   border-radius: var(--radius-small);
-  background: oklch(0.52 0.11 110 / var(--heat));
-  color: var(--primary-dark);
+  background: rgb(237 27 36 / var(--heat));
+  color: var(--ink);
   font: inherit;
   text-align: center;
 }
@@ -2001,13 +2013,13 @@ svg .chart-click.selected {
 .heat-cell strong {
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .heat-cell small {
-  color: oklch(0.3 0.06 112);
+  color: rgb(0 0 0 / 0.62);
   font-size: 0.62rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .heat-cell:hover,
@@ -2053,7 +2065,7 @@ svg .chart-click.selected {
   color: var(--ink);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 850;
+  font-weight: 500;
   text-align: center;
 }
 
@@ -2061,7 +2073,7 @@ svg .chart-click.selected {
   overflow: hidden;
   color: var(--muted);
   font-size: 0.7rem;
-  font-weight: 750;
+  font-weight: 500;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2144,7 +2156,7 @@ svg .chart-click.selected {
 .insight-metrics span {
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .insight-metrics strong {
@@ -2178,7 +2190,7 @@ svg .chart-click.selected {
 .coverage-row small {
   color: var(--muted);
   font-size: 0.8rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .accuracy-row strong,
@@ -2235,14 +2247,14 @@ svg .chart-click.selected {
 .compare-card dt {
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 780;
+  font-weight: 500;
 }
 
 .compare-card dd {
   margin: 3px 0 0;
   font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 820;
+  font-weight: 500;
 }
 
 .follower-panel {
@@ -2264,7 +2276,7 @@ svg .chart-click.selected {
 .panel-footnote {
   color: var(--muted);
   font-size: 0.78rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .follower-hero strong {
@@ -2380,7 +2392,7 @@ svg .chart-click.selected {
 .detail-heading small {
   color: var(--muted);
   font-size: 0.8rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .detail-actions {
@@ -2413,7 +2425,7 @@ svg .chart-click.selected {
   color: var(--muted);
   font-size: 0.72rem;
   font-style: normal;
-  font-weight: 730;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2427,7 +2439,7 @@ svg .chart-click.selected {
 .detail-metric small {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
-  font-weight: 780;
+  font-weight: 500;
 }
 
 .detail-metric em {
@@ -2456,7 +2468,7 @@ td {
 th {
   color: var(--muted);
   font-size: 0.76rem;
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .sort-button {
@@ -2470,7 +2482,7 @@ th {
   color: inherit;
   cursor: pointer;
   font: inherit;
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .sort-button::after {
@@ -2530,11 +2542,10 @@ tr:last-child td {
   place-items: center;
   overflow: hidden;
   border-radius: var(--radius-small);
-  background:
-    linear-gradient(145deg, var(--primary-soft), var(--blue-soft));
-  color: var(--primary-dark);
+  background: var(--surface-raised);
+  color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .thumb img {
@@ -2558,21 +2569,21 @@ tr:last-child td {
 .caption a {
   color: var(--primary-dark);
   font-size: 0.82rem;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .caption-meta {
   overflow: hidden;
   color: var(--muted);
   font-size: 0.76rem;
-  font-weight: 720;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .number {
   font-variant-numeric: tabular-nums;
-  font-weight: 760;
+  font-weight: 500;
 }
 
 .number-stack {
@@ -2584,7 +2595,7 @@ tr:last-child td {
 .number-stack strong {
   font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 800;
+  font-weight: 500;
   line-height: 1.05;
 }
 
@@ -2592,17 +2603,17 @@ tr:last-child td {
   color: var(--muted);
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .metric-unavailable {
   color: var(--subtle);
   font-size: 0.78rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .metric-source.derived {
-  color: var(--primary-dark);
+  color: var(--subtle);
 }
 
 .score-pill {
@@ -2616,7 +2627,7 @@ tr:last-child td {
   background: var(--surface);
   color: var(--muted);
   font-size: 0.76rem;
-  font-weight: 850;
+  font-weight: 500;
 }
 
 .score-high {
@@ -2626,12 +2637,12 @@ tr:last-child td {
 
 .score-good {
   background: var(--blue-soft);
-  color: oklch(0.34 0.09 245);
+  color: #1a1a1a;
 }
 
 .score-mid {
   background: var(--amber-soft);
-  color: oklch(0.34 0.07 80);
+  color: #5a5a5a;
 }
 
 .type-pill {
@@ -2643,28 +2654,28 @@ tr:last-child td {
   background: var(--surface);
   color: var(--muted);
   font-size: 0.76rem;
-  font-weight: 820;
+  font-weight: 500;
   white-space: nowrap;
 }
 
 .type-pill.reel {
-  background: var(--primary-soft);
-  color: var(--primary-dark);
+  background: #111111;
+  color: #ffffff;
 }
 
 .type-pill.video {
   background: var(--blue-soft);
-  color: oklch(0.34 0.09 245);
+  color: #1a1a1a;
 }
 
 .type-pill.image {
   background: var(--coral-soft);
-  color: oklch(0.36 0.1 30);
+  color: #4e4e4e;
 }
 
 .type-pill.carousel {
   background: var(--amber-soft);
-  color: oklch(0.34 0.07 80);
+  color: #5a5a5a;
 }
 
 .positive {
@@ -2737,7 +2748,7 @@ tr:last-child td {
 .mobile-stat span {
   color: var(--muted);
   font-size: 0.75rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .mobile-stat strong {
@@ -2749,7 +2760,7 @@ tr:last-child td {
   color: var(--muted);
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
-  font-weight: 720;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3057,12 +3068,12 @@ body.view-overview .toolbar {
 }
 
 .account-card:hover {
-  border-color: var(--primary-dark);
+  border-color: var(--ink);
   transform: translateY(-1px);
 }
 
 .account-card.has-error {
-  border-color: oklch(0.82 0.07 30);
+  border-color: #e7a6a9;
 }
 
 .account-card-head {
@@ -3092,7 +3103,7 @@ body.view-overview .toolbar {
   display: block;
   color: var(--muted);
   font-size: 0.72rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .account-card-stats strong {
@@ -3103,7 +3114,7 @@ body.view-overview .toolbar {
 .account-card-stats small {
   display: block;
   font-size: 0.74rem;
-  font-weight: 720;
+  font-weight: 500;
 }
 
 .account-card-stats small.up {
@@ -3124,7 +3135,7 @@ body.view-overview .toolbar {
   margin-top: auto;
   color: var(--primary-dark);
   font-size: 0.82rem;
-  font-weight: 740;
+  font-weight: 500;
 }
 
 .overview-empty {
@@ -3136,12 +3147,235 @@ body.view-overview .toolbar {
 .back-link {
   color: var(--muted);
   font-size: 0.85rem;
-  font-weight: 700;
+  font-weight: 500;
   white-space: nowrap;
 }
 
 .back-link:hover {
   color: var(--primary-dark);
+}
+
+/* Sync loader - shown only while the very first data fetch is in flight.
+   The SVG "assembles" the dashboard (bars rise, red line draws, donut sweeps)
+   on a JS-retriggered 4.6s cycle so every element stays in lockstep. */
+.sync-loader {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 10px 28px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.sync-visual {
+  min-width: 0;
+}
+
+.assemble {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.as-base {
+  stroke: var(--border-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.as-bar {
+  fill: var(--amber);
+  transform: scaleY(0);
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+
+.as-line {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.as-dot {
+  fill: var(--primary);
+  opacity: 0;
+  offset-path: path('M24 92 L51 80 L78 86 L105 64 L132 72 L159 52 L186 60 L213 40 L240 48 L262 32');
+  offset-rotate: 0deg;
+}
+
+.as-ring-track {
+  fill: none;
+  stroke: var(--surface-raised);
+  stroke-width: 10;
+}
+
+.as-ring {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 10;
+  stroke-dasharray: 0 100;
+}
+
+.assemble.play {
+  animation: asCycle 4.6s linear forwards;
+}
+
+.assemble.play .as-bar {
+  animation: asRise 600ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation-delay: var(--d);
+}
+
+.assemble.play .as-line {
+  animation: asDraw 1.2s ease-in-out forwards;
+  animation-delay: 1.15s;
+}
+
+.assemble.play .as-dot {
+  animation: asRide 1.2s ease-in-out forwards;
+  animation-delay: 1.15s;
+}
+
+.assemble.play .as-ring {
+  animation: asSweep 900ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation-delay: 2.55s;
+}
+
+@keyframes asCycle {
+  0% { opacity: 0; }
+  4% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes asRise {
+  to { transform: scaleY(1); }
+}
+
+@keyframes asDraw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes asRide {
+  0% { opacity: 1; offset-distance: 0%; }
+  88% { opacity: 1; }
+  100% { opacity: 0; offset-distance: 100%; }
+}
+
+@keyframes asSweep {
+  to { stroke-dasharray: 76 100; }
+}
+
+.sync-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sync-mark {
+  width: 22px;
+  height: auto;
+}
+
+.sync-head h2 {
+  margin: 0;
+}
+
+.sync-stage {
+  min-height: 1.3em;
+  margin: 10px 0 12px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.sync-stage.swap {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.sync-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-raised);
+}
+
+#sync-fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 600ms ease;
+}
+
+.sync-tip {
+  margin: 12px 0 0;
+  color: var(--subtle);
+  font-size: 0.82rem;
+  opacity: 1;
+  transition: opacity 200ms ease;
+}
+
+.sync-tip.swap {
+  opacity: 0;
+}
+
+@media (max-width: 860px) {
+  .sync-loader {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Slim indeterminate bar for background syncs - data stays visible underneath. */
+body.is-syncing::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  width: 34%;
+  height: 3px;
+  border-radius: 0 999px 999px 0;
+  background: var(--primary);
+  animation: sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(320%); }
+}
+
+/* Multipage app: each sidebar nav item shows exactly one page wrapper. */
+.app-page {
+  display: none;
+}
+
+.app-page.active {
+  display: block;
+}
+
+/* Single-panel pages read better at a comfortable width. */
+.app-page[data-page="pulse"] .panel,
+.app-page[data-page="reports"] .panel {
+  max-width: 880px;
+}
+
+/* On the accounts landing there is no selected account, so the per-account
+   pages are unreachable - dim their nav entries. */
+body.view-overview .nav-item[href^="#"] {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
