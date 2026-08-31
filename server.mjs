@@ -267,6 +267,10 @@ export async function handleRequest(req, res) {
       return sendJson(res, data);
     }
 
+    if (requestUrl.pathname === '/api/insights/range') {
+      return await handleRangeInsights(res, requestUrl);
+    }
+
     if (requestUrl.pathname === '/api/live') {
       return await handleLiveStream(req, res, requestUrl);
     }
@@ -881,6 +885,54 @@ async function fetchAudience(activeConfig) {
   return result;
 }
 
+const ACCOUNT_WINDOW_METRICS = ['views', 'reach', 'total_interactions', 'accounts_engaged', 'profile_views'];
+
+// Totals over a window. One combined call; fall back to per-metric so a single
+// unsupported metric never blanks the whole window.
+async function accountTotals(id, { since, until }, activeConfig) {
+  const read = (rows) => {
+    const map = {};
+    for (const row of rows || []) {
+      const value = row.total_value?.value;
+      if (typeof value === 'number') map[row.name] = value;
+    }
+    return map;
+  };
+  try {
+    const response = await graphGet(`/${id}/insights`, {
+      metric: ACCOUNT_WINDOW_METRICS.join(','), period: 'day', metric_type: 'total_value', since, until
+    }, activeConfig);
+    const map = read(response.data);
+    if (Object.keys(map).length) return map;
+  } catch {
+    // fall through to per-metric
+  }
+  const map = {};
+  await Promise.all(ACCOUNT_WINDOW_METRICS.map(async (metric) => {
+    try {
+      const response = await graphGet(`/${id}/insights`, {
+        metric, period: 'day', metric_type: 'total_value', since, until
+      }, activeConfig);
+      Object.assign(map, read(response.data));
+    } catch {
+      // skip metrics the API declines for this account/version
+    }
+  }));
+  return map;
+}
+
+// Reach split into FOLLOWER vs NON_FOLLOWER for the same window.
+async function accountFollowType(id, { since, until }, activeConfig) {
+  try {
+    const response = await graphGet(`/${id}/insights`, {
+      metric: 'reach', period: 'day', metric_type: 'total_value', breakdown: 'follow_type', since, until
+    }, activeConfig);
+    return parseDemographic(response.data || []);
+  } catch {
+    return {};
+  }
+}
+
 // Account-level metrics that accept a since/until range, plus the reach split by
 // follow_type (followers vs non-followers). All windowable and real - the dashboard
 // uses these so the headline numbers can react to a date range honestly, instead of
@@ -904,56 +956,12 @@ async function fetchAccountInsights(activeConfig) {
     { key: 'last_90_days', label: 'Last 90 days', days: 90 },
     { key: 'all_time', label: 'All time', days: 728 }
   ];
-  const METRICS = ['views', 'reach', 'total_interactions', 'accounts_engaged', 'profile_views'];
   const DAILY_PERFORMANCE_METRICS = ['views', 'reach', 'total_interactions', 'likes', 'comments', 'shares', 'saves', 'profile_views'];
   const DAILY_PRODUCT_METRICS = ['views', 'reach', 'total_interactions', 'likes', 'comments', 'shares', 'saves'];
   const DAILY_HISTORY_DAYS = 90;
 
-  // Totals over a window. One combined call; fall back to per-metric so a single
-  // unsupported metric never blanks the whole window.
-  const totalsFor = async ({ since, until }) => {
-    const read = (rows) => {
-      const map = {};
-      for (const row of rows || []) {
-        const value = row.total_value?.value;
-        if (typeof value === 'number') map[row.name] = value;
-      }
-      return map;
-    };
-    try {
-      const response = await graphGet(`/${id}/insights`, {
-        metric: METRICS.join(','), period: 'day', metric_type: 'total_value', since, until
-      }, activeConfig);
-      const map = read(response.data);
-      if (Object.keys(map).length) return map;
-    } catch {
-      // fall through to per-metric
-    }
-    const map = {};
-    await Promise.all(METRICS.map(async (metric) => {
-      try {
-        const response = await graphGet(`/${id}/insights`, {
-          metric, period: 'day', metric_type: 'total_value', since, until
-        }, activeConfig);
-        Object.assign(map, read(response.data));
-      } catch {
-        // skip metrics the API declines for this account/version
-      }
-    }));
-    return map;
-  };
-
-  // Reach split into FOLLOWER vs NON_FOLLOWER for the same window.
-  const followTypeFor = async ({ since, until }) => {
-    try {
-      const response = await graphGet(`/${id}/insights`, {
-        metric: 'reach', period: 'day', metric_type: 'total_value', breakdown: 'follow_type', since, until
-      }, activeConfig);
-      return parseDemographic(response.data || []);
-    } catch {
-      return {};
-    }
-  };
+  const totalsFor = (range) => accountTotals(id, range, activeConfig);
+  const followTypeFor = (range) => accountFollowType(id, range, activeConfig);
 
   const dailyReachFor = async (days = 90) => {
     try {
@@ -1277,6 +1285,255 @@ function parseInsightTimeSeries(data, metric) {
       };
     })
     .filter((point) => point.date && point.value !== null);
+}
+
+// On-demand historical ranges.
+//
+// Meta only serves reach as a time series - views, interactions, likes, saves and the
+// product split are total_value-only, so a day-by-day series costs one Graph call per day.
+// Pre-fetching a year would be ~700 calls per refresh, so an arbitrary range is bucketed
+// instead: the wider the span, the coarser the bucket, and the call count stays bounded.
+const RANGE_GRANULARITIES = [
+  { key: 'day', maxDays: 31 },
+  { key: 'week', maxDays: 182 },
+  { key: 'month', maxDays: Infinity }
+];
+const RANGE_MAX_BUCKETS = 40;
+// Instagram rejects `since` older than ~2 years, matching the 728-day "All time" window.
+const RANGE_MAX_LOOKBACK_DAYS = 728;
+const rangeInsightsCache = new Map(); // `${accountId}:${kind}:${since}:${until}` -> { value, expires }
+
+const utcDayKey = (date) => date.toISOString().slice(0, 10);
+
+export function rangeWindows(sinceSec, untilSec) {
+  if (!Number.isFinite(sinceSec) || !Number.isFinite(untilSec) || sinceSec > untilSec) {
+    throw new Error('Invalid range: since must be on or before until.');
+  }
+  const spanDays = Math.floor((untilSec - sinceSec) / 86400) + 1;
+  const granularity = RANGE_GRANULARITIES.find((entry) => spanDays <= entry.maxDays).key;
+  const end = new Date(untilSec * 1000);
+  const first = new Date(sinceSec * 1000);
+
+  let cursor = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate()));
+  if (granularity === 'week') cursor.setUTCDate(cursor.getUTCDate() - ((cursor.getUTCDay() + 6) % 7));
+  if (granularity === 'month') cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), 1));
+
+  const windows = [];
+  while (cursor <= end && windows.length < RANGE_MAX_BUCKETS) {
+    const next = new Date(cursor);
+    if (granularity === 'day') next.setUTCDate(cursor.getUTCDate() + 1);
+    else if (granularity === 'week') next.setUTCDate(cursor.getUTCDate() + 7);
+    else next.setUTCMonth(cursor.getUTCMonth() + 1);
+
+    const since = Math.max(sinceSec, Math.floor(cursor.getTime() / 1000));
+    const until = Math.min(untilSec, Math.floor((next.getTime() - 1000) / 1000));
+    windows.push({
+      key: granularity === 'month' ? utcDayKey(cursor).slice(0, 7) : utcDayKey(cursor),
+      label: rangeBucketLabel(cursor, granularity),
+      startDate: utcDayKey(new Date(since * 1000)),
+      endDate: utcDayKey(new Date(until * 1000)),
+      since,
+      until
+    });
+    cursor = next;
+  }
+  return { granularity, windows };
+}
+
+function rangeBucketLabel(date, granularity) {
+  if (granularity === 'month') {
+    return new Intl.DateTimeFormat('en', { month: 'short', year: 'numeric', timeZone: 'UTC' }).format(date);
+  }
+  const short = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(date);
+  return granularity === 'week' ? `Wk of ${short}` : short;
+}
+
+// ponytail: no media_product_type breakdown for on-demand ranges - it doubles the call count
+// and the tooltip already renders "Product split: Unavailable". To add it, issue a second
+// accountTotals with breakdown: 'media_product_type' when granularity === 'day'.
+async function fetchRangeInsights(activeConfig, { since, until }) {
+  const id = activeConfig.instagramUserId;
+  const { granularity, windows } = rangeWindows(since, until);
+
+  let firstError = '';
+  const buckets = await mapLimit(windows, 4, async (window) => {
+    try {
+      const totals = await accountTotals(id, { since: window.since, until: window.until }, activeConfig);
+      if (!Object.keys(totals).length) return null;
+      return {
+        date: window.key,
+        key: window.key,
+        label: window.label,
+        startDate: window.startDate,
+        endDate: window.endDate,
+        metrics: normalizeAccountMetrics(totals),
+        byProduct: {}
+      };
+    } catch (error) {
+      firstError = firstError || error.message || '';
+      return null;
+    }
+  });
+
+  const series = buckets.filter(Boolean);
+  if (!series.length) {
+    // accountTotals swallows per-metric failures, so ask Meta once more without a net and
+    // surface its own wording - a generic "no data" hides an expired token or a metric the
+    // account cannot read.
+    if (!firstError) {
+      try {
+        await graphGet(`/${id}/insights`, {
+          metric: 'views', period: 'day', metric_type: 'total_value', since, until
+        }, activeConfig);
+      } catch (error) {
+        firstError = error.message || '';
+      }
+    }
+    return {
+      available: false,
+      granularity,
+      series: [],
+      reason: firstError || 'Meta returned no account totals for this date range.'
+    };
+  }
+
+  const [totals, followType] = await Promise.all([
+    accountTotals(id, { since, until }, activeConfig).catch(() => ({})),
+    accountFollowType(id, { since, until }, activeConfig).catch(() => ({}))
+  ]);
+
+  return {
+    available: true,
+    granularity,
+    series,
+    totals: normalizeAccountMetrics(totals),
+    reachByFollowType: followType
+  };
+}
+
+// follower_count is a time series, so one call covers the whole span; only the unfollow
+// split needs a call per bucket.
+async function fetchRangeFollowers(activeConfig, account, { since, until }) {
+  const id = activeConfig.instagramUserId;
+  const { granularity, windows } = rangeWindows(since, until);
+
+  let dailyGained = [];
+  try {
+    const response = await graphGet(`/${id}/insights`, {
+      metric: 'follower_count', period: 'day', metric_type: 'time_series', since, until
+    }, activeConfig);
+    dailyGained = parseInsightTimeSeries(response.data || [], 'follower_count');
+  } catch (error) {
+    return { available: false, granularity, series: [], reason: error.message || 'Daily follower movement is unavailable for this range.' };
+  }
+
+  if (!dailyGained.length) {
+    return { available: false, granularity, series: [], reason: 'Meta returned no follower_count rows for this date range.' };
+  }
+
+  const buckets = await mapLimit(windows, 4, async (window) => {
+    let lost = 0;
+    try {
+      const response = await graphGet(`/${id}/insights`, {
+        metric: 'follows_and_unfollows', period: 'day', metric_type: 'total_value',
+        breakdown: 'follow_type', since: window.since, until: window.until
+      }, activeConfig);
+      lost = toNumber(parseDemographic(response.data || []).NON_FOLLOWER, 0);
+    } catch {
+      lost = 0;
+    }
+    const gained = dailyGained
+      .filter((point) => point.date >= window.startDate && point.date <= window.endDate)
+      .reduce((sum, point) => sum + toNumber(point.value, 0), 0);
+    return {
+      date: window.key, key: window.key, label: window.label,
+      startDate: window.startDate, endDate: window.endDate,
+      gained, lost, net: gained - lost, followers: null
+    };
+  });
+
+  const series = buckets.filter(Boolean);
+  if (!series.length) {
+    return { available: false, granularity, series: [], reason: 'Meta returned no follower movement for this date range.' };
+  }
+
+  // Walk today's follower count backwards through each bucket's net change.
+  let running = toNumber(account?.followers, 0);
+  for (let index = series.length - 1; index >= 0; index -= 1) {
+    series[index].followers = running;
+    running -= series[index].net;
+  }
+
+  const totalGained = series.reduce((sum, point) => sum + point.gained, 0);
+  const totalLost = series.reduce((sum, point) => sum + point.lost, 0);
+  return {
+    available: true,
+    granularity,
+    series,
+    totalGained,
+    totalLost,
+    rangeNet: totalGained - totalLost,
+    currentFollowers: toNumber(account?.followers, 0),
+    estimatedTotals: true
+  };
+}
+
+// GET /api/insights/range?since=YYYY-MM-DD&until=YYYY-MM-DD&kind=performance|followers
+async function handleRangeInsights(res, requestUrl) {
+  const parseDay = (name) => {
+    const raw = requestUrl.searchParams.get(name) || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+    const time = Date.parse(`${raw}T00:00:00Z`);
+    return Number.isFinite(time) ? { key: raw, sec: Math.floor(time / 1000) } : null;
+  };
+
+  const start = parseDay('since');
+  const finish = parseDay('until');
+  if (!start || !finish) {
+    return sendJson(res, { error: 'since and until must be YYYY-MM-DD dates.' }, 400);
+  }
+  if (start.sec > finish.sec) {
+    return sendJson(res, { error: 'since must be on or before until.' }, 400);
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const floorSec = nowSec - RANGE_MAX_LOOKBACK_DAYS * 86400;
+  if (finish.sec < floorSec) {
+    return sendJson(res, { error: 'Instagram only keeps account insights for about 2 years. Pick a range inside the last 728 days.' }, 400);
+  }
+
+  const since = Math.max(start.sec, floorSec);
+  const until = Math.min(finish.sec + 86399, nowSec);
+  const kind = requestUrl.searchParams.get('kind') === 'followers' ? 'followers' : 'performance';
+  const activeConfig = accountFromUrl(requestUrl);
+
+  if (!hasCredentials(activeConfig)) {
+    // ponytail: demo mode has no historical Graph data to stand in for. Wire the demo
+    // generator in here if a credential-free walkthrough of old ranges is ever needed.
+    return sendJson(res, {
+      available: false,
+      requested: { since: start.key, until: finish.key, kind },
+      reason: 'Demo mode has no historical Instagram data. Connect an account to load older ranges.'
+    });
+  }
+
+  const cacheKey = `${activeConfig.instagramUserId}:${kind}:${since}:${until}`;
+  const cached = rangeInsightsCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return sendJson(res, cached.value);
+  }
+
+  const payload = kind === 'followers'
+    ? await fetchRangeFollowers(activeConfig, await fetchProfile(activeConfig).catch(() => ({})), { since, until })
+    : await fetchRangeInsights(activeConfig, { since, until });
+
+  const value = {
+    ...payload,
+    requested: { since: start.key, until: finish.key, kind },
+    clamped: since !== start.sec
+  };
+  rangeInsightsCache.set(cacheKey, { value, expires: Date.now() + 30 * 60 * 1000 });
+  return sendJson(res, value);
 }
 
 // Last `count` calendar weeks (Monday start, UTC); the current partial week runs to now.

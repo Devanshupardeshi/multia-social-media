@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Multia · Instagram Command Center</title>
     <link rel="icon" type="image/svg+xml" href="/logos/m-black.svg">
-    <link rel="stylesheet" href="/styles.css?v=24">
+    <link rel="stylesheet" href="/styles.css?v=25">
   </head>
   <body>
     <div class="app-shell">
@@ -365,10 +365,19 @@
                 <p class="section-label">Account performance</p>
                 <h2 id="aud-perf-title">Views, reach &amp; reach source</h2>
               </div>
-              <label class="select-label" id="account-window-label" hidden>
-                <span>Window</span>
-                <select id="account-window"></select>
-              </label>
+              <div class="header-controls">
+                <label class="select-label" id="account-window-label" hidden>
+                  <span>Window</span>
+                  <select id="account-window"></select>
+                </label>
+                <div class="range-control">
+                  <button class="secondary-button small-button range-trigger" id="account-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-calendar">
+                    <span id="account-range-label">Custom range</span>
+                    <span class="range-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div class="calendar-pop" id="account-calendar" role="dialog" aria-label="Select account performance date range" hidden></div>
+                </div>
+              </div>
             </div>
             <div id="account-insights">
               <div class="chart-empty">Waiting for account insights</div>
@@ -400,10 +409,16 @@
                 <p class="section-label">By gender</p>
                 <h2 id="aud-gender-title">Reach &amp; interactions by gender</h2>
               </div>
-              <label class="select-label" id="gender-timeframe-label" hidden>
-                <span>Window</span>
-                <select id="gender-timeframe"></select>
-              </label>
+              <div class="header-controls">
+                <label class="select-label" id="gender-timeframe-label" hidden>
+                  <span>Window</span>
+                  <select id="gender-timeframe"></select>
+                </label>
+                <label class="select-label" id="gender-compare-label" hidden>
+                  <span>Compare with</span>
+                  <select id="gender-compare"></select>
+                </label>
+              </div>
             </div>
             <div id="gender-breakdown">
               <div class="chart-empty">Waiting for audience data</div>
@@ -656,6 +671,6 @@
       </main>
     </div>
 
-    <script src="/app.js?v=38" type="module"></script>
+    <script src="/app.js?v=40" type="module"></script>
   </body>
 </html>

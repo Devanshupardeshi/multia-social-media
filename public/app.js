@@ -19,13 +19,18 @@ const state = {
   isRefreshing: false,
   metricsAnimated: false,
   performanceRange: null,
-  performanceCal: null,
+  performanceCompareRange: null,
   reachRange: null,
-  reachCal: null,
+  reachCompareRange: null,
   followerRange: null,
-  followerCal: null,
+  followerCompareRange: null,
+  rangeCal: null,
+  rangeData: new Map(),
   audienceTimeframe: null,
+  audienceCompareTimeframe: null,
   accountWindow: null,
+  accountRange: null,
+  accountCompareRange: null,
   usernameHidden: false
 };
 
@@ -89,9 +94,14 @@ const els = {
   genderBreakdown: document.querySelector('#gender-breakdown'),
   genderTimeframe: document.querySelector('#gender-timeframe'),
   genderTimeframeLabel: document.querySelector('#gender-timeframe-label'),
+  genderCompare: document.querySelector('#gender-compare'),
+  genderCompareLabel: document.querySelector('#gender-compare-label'),
   accountInsights: document.querySelector('#account-insights'),
   accountWindow: document.querySelector('#account-window'),
   accountWindowLabel: document.querySelector('#account-window-label'),
+  accountRangeTrigger: document.querySelector('#account-range-trigger'),
+  accountRangeLabel: document.querySelector('#account-range-label'),
+  accountCalendar: document.querySelector('#account-calendar'),
   audienceDemographics: document.querySelector('#audience-demographics'),
   compareBoard: document.querySelector('#compare-board'),
   contentDetail: document.querySelector('#content-detail'),
@@ -103,6 +113,518 @@ const els = {
 // Eye-toggle icons (defined before init() runs so applyUsernameMask can use them).
 const EYE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+// ---------------------------------------------------------------------------
+// Shared range calendar + on-demand history
+//
+// The performance, reach and follower panels all pick a date range the same way, so they
+// share one calendar. Each panel is a descriptor saying where its popover lives, which
+// days it already has locally, and what to re-render once a range is applied.
+//
+// The server pre-fetches ~90 days. Anything older is fetched on demand when Apply is
+// pressed (/api/insights/range), bucketed by span so the Graph API call count stays small.
+// ---------------------------------------------------------------------------
+
+// Instagram rejects insight windows older than ~2 years; the server clamps to the same floor.
+const RANGE_FLOOR_DAYS = 728;
+
+const RANGE_PANELS = {
+  performance: {
+    kind: 'performance',
+    calendar: () => els.performanceCalendar,
+    trigger: () => els.performanceRangeTrigger,
+    rangeKey: 'performanceRange',
+    compareKey: 'performanceCompareRange',
+    dataDays: () => trendDailySource(chartContent()).points.map((point) => point.key),
+    activeRange: () => activePerformanceRange(trendDailySource(chartContent()).points),
+    rerender: () => renderCharts()
+  },
+  reach: {
+    kind: 'performance',
+    calendar: () => els.reachCalendar,
+    trigger: () => els.reachRangeTrigger,
+    rangeKey: 'reachRange',
+    compareKey: 'reachCompareRange',
+    dataDays: () => reachDailySource(chartContent()).points.map((point) => point.key),
+    activeRange: () => activeAccountReachRange(reachDailySource(chartContent()).points),
+    rerender: () => renderCharts()
+  },
+  follower: {
+    kind: 'followers',
+    calendar: () => els.followerCalendar,
+    trigger: () => els.followerRangeTrigger,
+    rangeKey: 'followerRange',
+    compareKey: 'followerCompareRange',
+    dataDays: () => (state.data?.summary?.followerTrend?.series || []).map((point) => point.date),
+    activeRange: () => activeFollowerRange(state.data?.summary?.followerTrend?.series || []),
+    rerender: () => renderFollowerGrowth(),
+    // Follower buckets already carry gained/lost/net/followers - pass them through intact.
+    mapBucket: (bucket) => ({ ...bucket, key: bucket.key || bucket.date })
+  },
+  account: {
+    kind: 'performance',
+    calendar: () => els.accountCalendar,
+    trigger: () => els.accountRangeTrigger,
+    rangeKey: 'accountRange',
+    compareKey: 'accountCompareRange',
+    // Nothing is pre-fetched for this panel - every custom range is loaded on Apply.
+    dataDays: () => [],
+    activeRange: () => {
+      const range = normalizedRange(state.accountRange);
+      return range ? { start: parseKey(range.start), end: parseKey(range.end) } : null;
+    },
+    rerender: () => renderAccountInsights()
+  }
+};
+
+// One percentage-change badge shared by every panel that compares two windows.
+function deltaBadge(current, previous) {
+  const a = metricNumber(current, 0);
+  const b = metricNumber(previous, 0);
+  const cls = a === b ? 'flat' : (a > b ? 'up' : 'down');
+  const pct = b === 0 ? null : ((a - b) / Math.abs(b)) * 100;
+  const text = pct === null
+    ? `vs ${compactNumber(b)}`
+    : `${pct > 0 ? '+' : ''}${pct.toFixed(1)}% vs ${compactNumber(b)}`;
+  return `<em class="delta-badge ${cls}">${escapeHtml(text)}</em>`;
+}
+
+// Kept as named wrappers so existing call sites (and the reach panel's day-only rule)
+// keep working against the shared calendar.
+function togglePerformanceCalendar(force) {
+  toggleRangeCalendar('performance', force);
+}
+
+function toggleReachCalendar(force) {
+  toggleRangeCalendar('reach', state.reachGranularity === 'day' ? force : false);
+}
+
+function toggleFollowerCalendar(force) {
+  toggleRangeCalendar('follower', force);
+}
+
+function withCompareSuffix(text, compareRange) {
+  const range = normalizedRange(compareRange);
+  return range ? `${text} vs ${rangeChipLabel(range)}` : text;
+}
+
+function rangeFloorKey() {
+  return dayKey(startOfDay(new Date(Date.now() - RANGE_FLOOR_DAYS * 86400000)));
+}
+
+function closeAllRangeCalendars() {
+  for (const panel of Object.values(RANGE_PANELS)) {
+    const el = panel.calendar();
+    if (el && !el.hasAttribute('hidden')) {
+      el.setAttribute('hidden', '');
+      panel.trigger()?.setAttribute('aria-expanded', 'false');
+    }
+  }
+  state.rangeCal = null;
+}
+
+function toggleRangeCalendar(panelKey, force) {
+  const panel = RANGE_PANELS[panelKey];
+  const el = panel?.calendar();
+  if (!el) return;
+
+  const shouldOpen = typeof force === 'boolean' ? force : el.hasAttribute('hidden');
+  if (!shouldOpen) {
+    el.setAttribute('hidden', '');
+    panel.trigger()?.setAttribute('aria-expanded', 'false');
+    if (state.rangeCal?.panel === panelKey) state.rangeCal = null;
+    return;
+  }
+
+  closeAllRangeCalendars();
+  const active = panel.activeRange();
+  const base = active ? active.end : new Date();
+  state.rangeCal = {
+    panel: panelKey,
+    view: new Date(base.getFullYear(), base.getMonth(), 1),
+    target: 'primary',
+    pending: null,
+    draft: {
+      primary: state[panel.rangeKey] ? { ...state[panel.rangeKey] } : null,
+      compare: state[panel.compareKey] ? { ...state[panel.compareKey] } : null
+    }
+  };
+  renderRangeCalendar();
+  el.removeAttribute('hidden');
+  panel.trigger()?.setAttribute('aria-expanded', 'true');
+}
+
+function anyRangeCalendarOpen() {
+  return Object.values(RANGE_PANELS).some((panel) => {
+    const el = panel.calendar();
+    return el && !el.hasAttribute('hidden');
+  });
+}
+
+function pickRangeDay(key) {
+  const cal = state.rangeCal;
+  if (!cal) return;
+  if (key > dayKey(new Date()) || key < rangeFloorKey()) return;
+
+  if (!cal.pending) {
+    cal.pending = key;
+  } else {
+    cal.draft[cal.target] = cal.pending <= key
+      ? { start: cal.pending, end: key }
+      : { start: key, end: cal.pending };
+    cal.pending = null;
+    // First pick fills Range A, then the calendar offers to fill the comparison next.
+    if (cal.target === 'primary' && !cal.draft.compare) cal.target = 'compare';
+  }
+  renderRangeCalendar();
+}
+
+function applyRangeCalendar() {
+  const cal = state.rangeCal;
+  if (!cal) return;
+  const panel = RANGE_PANELS[cal.panel];
+  state[panel.rangeKey] = cal.draft.primary;
+  state[panel.compareKey] = cal.draft.compare;
+  state.selectedInsight = null;
+  toggleRangeCalendar(cal.panel, false);
+  panel.rerender();
+}
+
+function resetRangeCalendar() {
+  const cal = state.rangeCal;
+  if (!cal) return;
+  cal.draft = { primary: null, compare: null };
+  cal.pending = null;
+  cal.target = 'primary';
+  applyRangeCalendar();
+}
+
+function rangeChipLabel(range) {
+  if (!range) return 'Not set';
+  return range.start === range.end
+    ? shortDate(range.start)
+    : `${shortDate(range.start)} - ${shortDate(range.end)}`;
+}
+
+function renderRangeCalendar() {
+  const cal = state.rangeCal;
+  if (!cal) return;
+  const panel = RANGE_PANELS[cal.panel];
+  const el = panel.calendar();
+  if (!el) return;
+
+  const year = cal.view.getFullYear();
+  const month = cal.view.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const lead = new Date(year, month, 1).getDay();
+  const todayKey = dayKey(new Date());
+  const floorKey = rangeFloorKey();
+  const dataDays = new Set(panel.dataDays().filter(Boolean));
+
+  const primary = cal.draft.primary;
+  const compare = cal.draft.compare;
+  const pendingKey = cal.pending;
+
+  const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month, 1));
+  const prevDisabled = dayKey(new Date(year, month, 1)) <= floorKey;
+  const nextDisabled = dayKey(new Date(year, month + 1, 1)) > todayKey;
+
+  const blanks = Array.from({ length: lead }, () => '<span class="cal-blank"></span>').join('');
+  const cells = Array.from({ length: daysInMonth }, (_, indexNo) => {
+    const day = indexNo + 1;
+    const key = dayKey(new Date(year, month, day));
+    const classes = ['cal-day'];
+    const outOfBounds = key > todayKey || key < floorKey;
+    if (primary && key >= primary.start && key <= primary.end) classes.push('in-range');
+    if (primary && key === primary.start) classes.push('is-start');
+    if (primary && key === primary.end) classes.push('is-end');
+    if (compare && key >= compare.start && key <= compare.end) classes.push('in-compare');
+    if (key === pendingKey) classes.push('is-pending');
+    if (key === todayKey) classes.push('is-today');
+    if (dataDays.has(key)) classes.push('has-data');
+    return `<button class="${classes.join(' ')}" type="button" data-cal-day="${key}"${outOfBounds ? ' disabled' : ''}>${day}</button>`;
+  }).join('');
+
+  const selection = pendingKey
+    ? `From ${shortDate(pendingKey)} - pick the end day`
+    : `Editing ${cal.target === 'compare' ? 'the comparison range' : 'range A'}`;
+
+  el.innerHTML = `
+    <div class="cal-head">
+      <button class="cal-nav" type="button" data-cal-nav="-1" aria-label="Previous month"${prevDisabled ? ' disabled' : ''}>&lt;</button>
+      <strong>${escapeHtml(monthLabel)}</strong>
+      <button class="cal-nav" type="button" data-cal-nav="1" aria-label="Next month"${nextDisabled ? ' disabled' : ''}>&gt;</button>
+    </div>
+    <div class="cal-targets">
+      <button class="cal-target${cal.target === 'primary' ? ' active' : ''}" type="button" data-cal-target="primary">
+        <span>Range A</span><strong>${escapeHtml(primary ? rangeChipLabel(primary) : 'All available')}</strong>
+      </button>
+      <button class="cal-target${cal.target === 'compare' ? ' active' : ''}${compare ? ' has-value' : ''}" type="button" data-cal-target="compare">
+        <span>Compare with</span><strong>${escapeHtml(rangeChipLabel(compare))}</strong>
+      </button>
+    </div>
+    <div class="cal-grid cal-weekdays"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>
+    <div class="cal-grid cal-days">${blanks}${cells}</div>
+    <div class="cal-foot">
+      <span class="cal-selection">${escapeHtml(selection)}</span>
+      <span class="cal-actions">
+        <button class="cal-reset" type="button" data-cal-reset>All available</button>
+        <button class="cal-apply" type="button" data-cal-apply>Apply</button>
+      </span>
+    </div>
+    <p class="cal-hint">Dotted days are already loaded. Older ranges are fetched from Instagram on Apply, at weekly or monthly resolution.</p>
+  `;
+}
+
+function bindRangeCalendar(panelKey) {
+  const panel = RANGE_PANELS[panelKey];
+  panel.trigger()?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleRangeCalendar(panelKey);
+  });
+
+  panel.calendar()?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const cal = state.rangeCal;
+    if (!cal) return;
+
+    const nav = event.target.closest('[data-cal-nav]');
+    if (nav) {
+      cal.view = new Date(cal.view.getFullYear(), cal.view.getMonth() + Number(nav.dataset.calNav), 1);
+      renderRangeCalendar();
+      return;
+    }
+    const target = event.target.closest('[data-cal-target]');
+    if (target) {
+      cal.target = target.dataset.calTarget;
+      cal.pending = null;
+      renderRangeCalendar();
+      return;
+    }
+    if (event.target.closest('[data-cal-reset]')) {
+      resetRangeCalendar();
+      return;
+    }
+    if (event.target.closest('[data-cal-apply]')) {
+      applyRangeCalendar();
+      return;
+    }
+    const dayBtn = event.target.closest('[data-cal-day]');
+    if (dayBtn && !dayBtn.disabled) pickRangeDay(dayBtn.dataset.calDay);
+  });
+}
+
+// --- on-demand range data ---------------------------------------------------
+
+function normalizedRange(range) {
+  if (!range?.start || !range?.end) return null;
+  return range.start <= range.end ? range : { start: range.end, end: range.start };
+}
+
+function rangeSpanLabel(range) {
+  return range ? `${shortDate(range.start)} - ${shortDate(range.end)}` : '';
+}
+
+// True when the locally cached series already spans this range, so no network call is
+// needed. Local points are contiguous from the oldest fetched day to today.
+function localCoversRange(keys, range) {
+  if (!keys.length || !range) return false;
+  return range.start >= keys.reduce((min, key) => (key < min ? key : min), keys[0]);
+}
+
+// Fetch a historical range once and memoise it. `onDone` re-renders when it lands.
+function requestRangeData(kind, range, onDone) {
+  const cacheKey = `${kind}:${range.start}:${range.end}`;
+  const cached = state.rangeData.get(cacheKey);
+  if (cached) return cached;
+
+  const entry = { status: 'loading', range };
+  state.rangeData.set(cacheKey, entry);
+  fetchJson(withAccount(`/api/insights/range?kind=${kind}&since=${range.start}&until=${range.end}`))
+    .then((payload) => {
+      state.rangeData.set(cacheKey, payload.available
+        ? { status: 'ready', range, payload }
+        : { status: 'error', range, reason: payload.reason || 'Instagram returned no data for this range.' });
+    })
+    .catch((error) => {
+      state.rangeData.set(cacheKey, { status: 'error', range, reason: error.message || 'Could not load this range.' });
+    })
+    .finally(() => onDone());
+  return state.rangeData.get(cacheKey);
+}
+
+// Resolve a range to chart points: straight from the local series when it covers the
+// range, otherwise from the on-demand endpoint.
+function resolveRangePoints(panelKey, range, localPoints, onDone) {
+  const panel = RANGE_PANELS[panelKey];
+  const bounded = normalizedRange(range);
+  if (!bounded) return { status: 'empty', points: [] };
+
+  if (localCoversRange(localPoints.map((point) => point.key), bounded)) {
+    return {
+      status: 'ready',
+      granularity: 'day',
+      local: true,
+      points: localPoints
+        .filter((point) => point.key >= bounded.start && point.key <= bounded.end)
+        .sort((a, b) => a.key.localeCompare(b.key))
+    };
+  }
+
+  const entry = requestRangeData(panel.kind, bounded, onDone);
+  if (entry.status !== 'ready') return { ...entry, points: [] };
+  const mapBucket = panel.mapBucket || ((bucket) => ({
+    key: bucket.key,
+    label: bucket.label,
+    metrics: bucket.metrics || {},
+    byProduct: bucket.byProduct || {},
+    value: metricNumber(bucket.metrics?.reach, 0),
+    content: null
+  }));
+  return {
+    status: 'ready',
+    granularity: entry.payload.granularity,
+    local: false,
+    points: entry.payload.series.map(mapBucket)
+  };
+}
+
+// One place that turns a non-ready range into chart-body HTML, so a slow or refused
+// range says why instead of rendering a bare "No data".
+function rangeStatusHtml(resolved, range) {
+  if (resolved.status === 'loading') {
+    return `<div class="chart-empty is-loading">Loading ${escapeHtml(rangeSpanLabel(range))} from Instagram…</div>`;
+  }
+  if (resolved.status === 'error') {
+    return `<div class="chart-empty">${escapeHtml(resolved.reason)}</div>`;
+  }
+  return '<div class="chart-empty">No data in this date range</div>';
+}
+
+function granularityNote(resolved) {
+  if (!resolved || resolved.local || resolved.status !== 'ready') return '';
+  const word = { day: 'daily', week: 'weekly', month: 'monthly' }[resolved.granularity] || 'bucketed';
+  return ` Older ranges are fetched live from Instagram at ${word} resolution.`;
+}
+
+// Totals + percentage change between the two selected ranges.
+function compareDeltaRow(primary, compare, metrics, primaryRange, compareRange) {
+  const sum = (points, read) => points.reduce((total, point) => total + metricNumber(read(point), 0), 0);
+  const cells = metrics.map((metric) => {
+    const read = metric.read || ((point) => point.metrics?.[metric.key]);
+    const a = sum(primary, read);
+    const b = sum(compare, read);
+    const pct = b === 0 ? null : ((a - b) / Math.abs(b)) * 100;
+    const cls = a === b ? 'flat' : (a > b ? 'up' : 'down');
+    const pctText = pct === null ? 'n/a' : `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+    return `
+      <div class="cmp-cell ${cls}">
+        <span class="cmp-metric">${escapeHtml(metric.label)}</span>
+        <strong>${compactNumber(a)}</strong>
+        <span class="cmp-prev">vs ${compactNumber(b)}</span>
+        <span class="cmp-pct">${escapeHtml(pctText)}</span>
+      </div>`;
+  }).join('');
+  return `
+    <div class="compare-summary">
+      <div class="cmp-legend">
+        <span><i class="legend-bar cmp-a"></i>A ${escapeHtml(rangeSpanLabel(primaryRange))}</span>
+        <span><i class="legend-bar cmp-b"></i>B ${escapeHtml(rangeSpanLabel(compareRange))}</span>
+      </div>
+      <div class="cmp-grid">${cells}</div>
+    </div>`;
+}
+
+// Fold a series into `count` contiguous buckets, summing as it goes. Two ranges are
+// compared by position, so a 90-bucket daily range against a 13-bucket weekly one has to
+// be levelled first - otherwise the shorter series bunches up at the left and reads as if
+// the data ran out.
+function resampleSeries(series, count) {
+  if (series.length <= count) return series;
+  return Array.from({ length: count }, (_, index) => {
+    const start = Math.floor((index * series.length) / count);
+    const end = Math.max(Math.floor(((index + 1) * series.length) / count), start + 1);
+    const slice = series.slice(start, end);
+    return {
+      key: slice[0].key,
+      label: slice.length > 1 ? `${slice[0].label} - ${slice[slice.length - 1].label}` : slice[0].label,
+      value: slice.reduce((sum, point) => sum + point.value, 0)
+    };
+  });
+}
+
+// Two ranges rarely have the same number of buckets, so both are levelled to the coarser
+// count and aligned by position: the first slice of A against the first slice of B.
+function renderComparisonBars(rawPrimary, rawCompare, options) {
+  const toValues = (series) => series.map((point) => ({
+    key: point.key,
+    label: point.label,
+    value: metricNumber(options.read(point), 0)
+  }));
+  const slots = Math.min(rawPrimary.length, rawCompare.length) || Math.max(rawPrimary.length, rawCompare.length);
+  const primary = resampleSeries(toValues(rawPrimary), slots);
+  const compare = resampleSeries(toValues(rawCompare), slots);
+  const levelled = primary.length !== rawPrimary.length || compare.length !== rawCompare.length;
+
+  const width = 860;
+  const height = 292;
+  const padding = { top: 18, right: 18, bottom: 46, left: 60 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const maxValue = Math.max(1, ...primary.map((point) => point.value), ...compare.map((point) => point.value));
+  const slot = innerWidth / slots;
+  const groupWidth = Math.min(58, slot * 0.78);
+  const gap = Math.max(1.5, Math.min(4, groupWidth * 0.08));
+  const barWidth = Math.max(2, (groupWidth - gap) / 2);
+
+  const bar = (point, slotIndex, seriesIndex, seriesLabel, rangeLabel) => {
+    if (!point) return '';
+    const value = point.value;
+    const barHeight = Math.max(value > 0 ? 2 : 0, (value / maxValue) * innerHeight);
+    const x = padding.left + slotIndex * slot + (slot - groupWidth) / 2 + seriesIndex * (barWidth + gap);
+    const y = padding.top + innerHeight - barHeight;
+    return `<rect class="chart-bar cmp-bar ${seriesIndex === 0 ? 'cmp-a' : 'cmp-b'} chart-click" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="3" role="button" tabindex="0" aria-label="${escapeAttribute(`${seriesLabel} ${point.label}: ${formatNumber(value)}`)}" ${insightAttrs({
+      id: `cmp-${seriesIndex}-${slotIndex}-${point.key}`,
+      title: `${options.metricLabel} - ${point.label}`,
+      subtitle: `${seriesLabel} (${rangeLabel})`,
+      source: options.source,
+      metrics: [{ label: options.metricLabel, value: formatNumber(value) }]
+    })}></rect>`;
+  };
+
+  const bars = Array.from({ length: slots }, (_, index) => (
+    bar(primary[index], index, 0, 'Range A', options.primaryLabel)
+    + bar(compare[index], index, 1, 'Range B', options.compareLabel)
+  )).join('');
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const y = padding.top + innerHeight - innerHeight * ratio;
+    return `
+      <line class="chart-grid" x1="${padding.left}" y1="${y}" x2="${padding.left + innerWidth}" y2="${y}"></line>
+      <text class="chart-label" x="${padding.left - 10}" y="${y + 4}" text-anchor="end">${compactNumber(maxValue * ratio)}</text>
+    `;
+  }).join('');
+
+  const labelEvery = Math.max(1, Math.ceil(slots / 8));
+  const labels = Array.from({ length: slots }, (_, index) => {
+    if (index !== 0 && index !== slots - 1 && index % labelEvery !== 0) return '';
+    const a = primary[index]?.label || '';
+    const b = compare[index]?.label || '';
+    const x = padding.left + index * slot + slot / 2;
+    return `
+      <text class="chart-label" x="${x}" y="${height - 24}" text-anchor="middle">${escapeHtml(a)}</text>
+      <text class="chart-label cmp-b-label" x="${x}" y="${height - 12}" text-anchor="middle">${escapeHtml(b)}</text>`;
+  }).join('');
+
+  return `
+    <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttribute(options.ariaLabel)}">
+      ${gridLines}
+      ${bars}
+      ${labels}
+      <text class="chart-axis-label" x="16" y="${padding.top + innerHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${padding.top + innerHeight / 2})">${escapeHtml(options.metricLabel)}</text>
+    </svg>
+    <p class="chart-note">${escapeHtml(options.note + (levelled ? ` Both periods are grouped into ${slots} equal slices so the bars line up; the totals above stay exact.` : ''))}</p>`;
+}
 
 init();
 
@@ -419,94 +941,18 @@ function bindEvents() {
     renderCharts();
   });
 
-  els.performanceRangeTrigger?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    togglePerformanceCalendar();
-  });
-
-  els.performanceCalendar?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const nav = event.target.closest('[data-performance-cal-nav]');
-    if (nav && state.performanceCal) {
-      state.performanceCal.view = new Date(state.performanceCal.view.getFullYear(), state.performanceCal.view.getMonth() + Number(nav.dataset.performanceCalNav), 1);
-      renderPerformanceCalendar();
-      return;
-    }
-    if (event.target.closest('[data-performance-cal-all]')) {
-      state.performanceRange = null;
-      togglePerformanceCalendar(false);
-      renderCharts();
-      return;
-    }
-    const dayBtn = event.target.closest('[data-performance-cal-day]');
-    if (dayBtn) pickPerformanceDay(dayBtn.dataset.performanceCalDay);
-  });
-
-  els.reachRangeTrigger?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    toggleReachCalendar();
-  });
-
-  els.reachCalendar?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const nav = event.target.closest('[data-cal-nav]');
-    if (nav && state.reachCal) {
-      state.reachCal.view = new Date(state.reachCal.view.getFullYear(), state.reachCal.view.getMonth() + Number(nav.dataset.calNav), 1);
-      renderReachCalendar();
-      return;
-    }
-    if (event.target.closest('[data-cal-reset]')) {
-      state.reachRange = null;
-      toggleReachCalendar(false);
-      renderCharts();
-      return;
-    }
-    const dayBtn = event.target.closest('[data-cal-day]');
-    if (dayBtn) pickReachDay(dayBtn.dataset.calDay);
-  });
-
-  els.followerRangeTrigger?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    toggleFollowerCalendar();
-  });
-
-  els.followerCalendar?.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const nav = event.target.closest('[data-follower-cal-nav]');
-    if (nav && state.followerCal) {
-      state.followerCal.view = new Date(state.followerCal.view.getFullYear(), state.followerCal.view.getMonth() + Number(nav.dataset.followerCalNav), 1);
-      renderFollowerCalendar();
-      return;
-    }
-    if (event.target.closest('[data-follower-cal-all]')) {
-      state.followerRange = null;
-      toggleFollowerCalendar(false);
-      renderFollowerGrowth();
-      return;
-    }
-    const dayBtn = event.target.closest('[data-follower-cal-day]');
-    if (dayBtn) pickFollowerDay(dayBtn.dataset.followerCalDay);
-  });
+  bindRangeCalendar('performance');
+  bindRangeCalendar('reach');
+  bindRangeCalendar('follower');
+  bindRangeCalendar('account');
 
   document.addEventListener('click', (event) => {
     if (event.target.closest('.range-control')) return;
-    if (els.performanceCalendar && !els.performanceCalendar.hasAttribute('hidden')) {
-      togglePerformanceCalendar(false);
-    }
-    if (els.reachCalendar && !els.reachCalendar.hasAttribute('hidden')) {
-      toggleReachCalendar(false);
-    }
-    if (els.followerCalendar && !els.followerCalendar.hasAttribute('hidden')) {
-      toggleFollowerCalendar(false);
-    }
+    closeAllRangeCalendars();
   });
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      if (els.performanceCalendar && !els.performanceCalendar.hasAttribute('hidden')) togglePerformanceCalendar(false);
-      if (els.reachCalendar && !els.reachCalendar.hasAttribute('hidden')) toggleReachCalendar(false);
-      if (els.followerCalendar && !els.followerCalendar.hasAttribute('hidden')) toggleFollowerCalendar(false);
-    }
+    if (event.key === 'Escape' && anyRangeCalendarOpen()) closeAllRangeCalendars();
   });
 
   // One delegated binding covers every chart on every page (there are multiple
@@ -578,10 +1024,18 @@ function bindEvents() {
   els.exportPdf?.addEventListener('click', exportReportPdf);
   els.genderTimeframe?.addEventListener('change', () => {
     state.audienceTimeframe = els.genderTimeframe.value;
+    if (state.audienceCompareTimeframe === state.audienceTimeframe) state.audienceCompareTimeframe = null;
+    renderGenderBreakdown();
+  });
+  els.genderCompare?.addEventListener('change', () => {
+    state.audienceCompareTimeframe = els.genderCompare.value || null;
     renderGenderBreakdown();
   });
   els.accountWindow?.addEventListener('change', () => {
     state.accountWindow = els.accountWindow.value;
+    // A preset window and a custom range are alternatives - picking one drops the other.
+    state.accountRange = null;
+    state.accountCompareRange = null;
     renderAccountInsights();
   });
 }
@@ -1051,11 +1505,46 @@ function renderTrendChart(content) {
   const source = trendDailySource(content);
   const range = activePerformanceRange(source.points);
   updatePerformanceRangeLabel(range);
-  const points = performancePointsForRange(source.points, range);
+
+  const primaryRange = normalizedRange(state.performanceRange)
+    || (range ? { start: dayKey(range.start), end: dayKey(range.end) } : null);
+  const resolved = resolveRangePoints('performance', primaryRange, source.points, renderCharts);
+  const compareRange = normalizedRange(state.performanceCompareRange);
+  const resolvedCompare = compareRange
+    ? resolveRangePoints('performance', compareRange, source.points, renderCharts)
+    : null;
+
+  if (resolved.status !== 'ready') {
+    setPanelDates(els.trendChart, rangeSpanLabel(primaryRange));
+    els.trendChart.innerHTML = rangeStatusHtml(resolved, primaryRange);
+    return;
+  }
+  if (resolvedCompare && resolvedCompare.status !== 'ready') {
+    setPanelDates(els.trendChart, rangeSpanLabel(primaryRange));
+    els.trendChart.innerHTML = rangeStatusHtml(resolvedCompare, compareRange);
+    return;
+  }
+
+  const points = resolved.points;
   setPanelDates(els.trendChart, points.length ? `${shortDate(points[0].key)} - ${shortDate(points[points.length - 1].key)}` : '');
 
   if (!points.length || !points.some((point) => trendMetricConfigs().some((metric) => metricValue(point, metric.key) > 0))) {
-    els.trendChart.innerHTML = '<div class="chart-empty">No daily performance data yet</div>';
+    els.trendChart.innerHTML = '<div class="chart-empty">No account performance in this date range</div>';
+    return;
+  }
+
+  if (resolvedCompare && resolvedCompare.points.length) {
+    const active = trendMetricConfigs().find((entry) => entry.key === state.chartMetric) || trendMetricConfigs()[0];
+    els.trendChart.innerHTML = compareDeltaRow(points, resolvedCompare.points, trendMetricConfigs(), primaryRange, compareRange)
+      + renderComparisonBars(points, resolvedCompare.points, {
+        read: (point) => metricValue(point, active.key),
+        metricLabel: active.label,
+        primaryLabel: rangeSpanLabel(primaryRange),
+        compareLabel: rangeSpanLabel(compareRange),
+        ariaLabel: `${active.label}: range A against range B`,
+        source: source.source,
+        note: `Comparing ${rangeSpanLabel(primaryRange)} against ${rangeSpanLabel(compareRange)}, aligned bucket by bucket.${granularityNote(resolved)}${granularityNote(resolvedCompare)}`
+      });
     return;
   }
 
@@ -1113,7 +1602,7 @@ function renderTrendChart(content) {
       <text class="chart-axis-label" x="${padding.left + innerWidth / 2}" y="${height - 1}" text-anchor="middle">Day</text>
       <text class="chart-axis-label" x="16" y="${padding.top + innerHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${padding.top + innerHeight / 2})">Account metrics</text>
     </svg>
-    <p class="chart-note">${escapeHtml(source.note)}</p>
+    <p class="chart-note">${escapeHtml(source.note + granularityNote(resolved))}</p>
   `;
 }
 
@@ -1244,109 +1733,15 @@ function activePerformanceRange(points) {
   return { start: bounds.min, end: bounds.max };
 }
 
-function performancePointsForRange(points, range) {
-  if (!range) return [];
-  const startKey = dayKey(range.start);
-  const endKey = dayKey(range.end);
-  return points
-    .slice()
-    .sort((a, b) => a.key.localeCompare(b.key))
-    .filter((point) => point.key >= startKey && point.key <= endKey);
-}
-
 function updatePerformanceRangeLabel(range) {
   if (!els.performanceRangeLabel) return;
   if (!range) {
     els.performanceRangeLabel.textContent = 'No data';
     return;
   }
-  els.performanceRangeLabel.textContent = state.performanceRange?.start
+  els.performanceRangeLabel.textContent = withCompareSuffix(state.performanceRange?.start
     ? `${shortDate(dayKey(range.start))} - ${shortDate(dayKey(range.end))}`
-    : 'All available';
-}
-
-function togglePerformanceCalendar(force) {
-  if (!els.performanceCalendar) return;
-  const shouldOpen = typeof force === 'boolean' ? force : els.performanceCalendar.hasAttribute('hidden');
-  if (shouldOpen) {
-    toggleReachCalendar(false);
-    toggleFollowerCalendar(false);
-    const range = activePerformanceRange(trendDailySource(chartContent()).points);
-    const base = range ? range.end : new Date();
-    state.performanceCal = { view: new Date(base.getFullYear(), base.getMonth(), 1), pendingStart: null };
-    renderPerformanceCalendar();
-    els.performanceCalendar.removeAttribute('hidden');
-    els.performanceRangeTrigger?.setAttribute('aria-expanded', 'true');
-  } else {
-    els.performanceCalendar.setAttribute('hidden', '');
-    els.performanceRangeTrigger?.setAttribute('aria-expanded', 'false');
-  }
-}
-
-function pickPerformanceDay(key) {
-  const cal = state.performanceCal;
-  if (!cal) return;
-  if (!cal.pendingStart) {
-    cal.pendingStart = key;
-    renderPerformanceCalendar();
-    return;
-  }
-  state.performanceRange = cal.pendingStart <= key
-    ? { start: cal.pendingStart, end: key }
-    : { start: key, end: cal.pendingStart };
-  cal.pendingStart = null;
-  togglePerformanceCalendar(false);
-  renderCharts();
-}
-
-function renderPerformanceCalendar() {
-  const cal = state.performanceCal;
-  if (!cal) return;
-
-  const view = cal.view;
-  const year = view.getFullYear();
-  const month = view.getMonth();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const lead = new Date(year, month, 1).getDay();
-  const todayKey = dayKey(new Date());
-
-  const source = trendDailySource(chartContent());
-  const dataDays = new Set(source.points.map((point) => point.key).filter(Boolean));
-  const active = activePerformanceRange(source.points);
-  const rangeStart = cal.pendingStart || (active && dayKey(active.start));
-  const rangeEnd = cal.pendingStart ? null : (active && dayKey(active.end));
-
-  const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month, 1));
-  const blanks = Array.from({ length: lead }, () => '<span class="cal-blank"></span>').join('');
-  const cells = Array.from({ length: daysInMonth }, (_, indexNo) => {
-    const day = indexNo + 1;
-    const key = dayKey(new Date(year, month, day));
-    const classes = ['cal-day'];
-    if (rangeStart && rangeEnd && key >= rangeStart && key <= rangeEnd) classes.push('in-range');
-    if (key === rangeStart) classes.push('is-start');
-    if (key === rangeEnd) classes.push('is-end');
-    if (key === todayKey) classes.push('is-today');
-    if (dataDays.has(key)) classes.push('has-data');
-    return `<button class="${classes.join(' ')}" type="button" data-performance-cal-day="${key}">${day}</button>`;
-  }).join('');
-
-  const selection = cal.pendingStart
-    ? `From ${shortDate(cal.pendingStart)} - pick an end day`
-    : (active ? `${shortDate(dayKey(active.start))} - ${shortDate(dayKey(active.end))}` : 'Pick a start day');
-
-  els.performanceCalendar.innerHTML = `
-    <div class="cal-head">
-      <button class="cal-nav" type="button" data-performance-cal-nav="-1" aria-label="Previous month">&lt;</button>
-      <strong>${escapeHtml(monthLabel)}</strong>
-      <button class="cal-nav" type="button" data-performance-cal-nav="1" aria-label="Next month">&gt;</button>
-    </div>
-    <div class="cal-grid cal-weekdays"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>
-    <div class="cal-grid cal-days">${blanks}${cells}</div>
-    <div class="cal-foot">
-      <span class="cal-selection">${escapeHtml(selection)}</span>
-      <button class="cal-reset" type="button" data-performance-cal-all>All available</button>
-    </div>
-  `;
+    : 'All available', state.performanceCompareRange);
 }
 
 function metricValue(point, metric) {
@@ -1770,9 +2165,9 @@ function updateAccountReachRangeLabel(range) {
     els.reachRangeLabel.textContent = 'No data';
     return;
   }
-  els.reachRangeLabel.textContent = state.reachRange?.start
+  els.reachRangeLabel.textContent = withCompareSuffix(state.reachRange?.start
     ? `${shortDate(dayKey(range.start))} - ${shortDate(dayKey(range.end))}`
-    : 'All available';
+    : 'All available', state.reachCompareRange);
 }
 
 function renderAccountReachChart(content) {
@@ -1798,7 +2193,38 @@ function renderAccountDailyReachChart(content) {
     return;
   }
 
-  const buckets = buildAccountDailyReach(source.points, range);
+  const primaryRange = normalizedRange(state.reachRange) || { start: dayKey(range.start), end: dayKey(range.end) };
+  const resolved = resolveRangePoints('reach', primaryRange, source.points, renderCharts);
+  const compareRange = normalizedRange(state.reachCompareRange);
+  const resolvedCompare = compareRange ? resolveRangePoints('reach', compareRange, source.points, renderCharts) : null;
+
+  if (resolved.status !== 'ready') {
+    els.reachChart.innerHTML = rangeStatusHtml(resolved, primaryRange);
+    return;
+  }
+  if (resolvedCompare && resolvedCompare.status !== 'ready') {
+    els.reachChart.innerHTML = rangeStatusHtml(resolvedCompare, compareRange);
+    return;
+  }
+
+  const reachMetric = [{ key: 'reach', label: 'Reach', read: (point) => point.value }];
+  if (resolvedCompare && resolvedCompare.points.length) {
+    els.reachChart.innerHTML = compareDeltaRow(resolved.points, resolvedCompare.points, reachMetric, primaryRange, compareRange)
+      + renderComparisonBars(resolved.points, resolvedCompare.points, {
+        read: (point) => metricNumber(point.value, 0),
+        metricLabel: 'Reach',
+        primaryLabel: rangeSpanLabel(primaryRange),
+        compareLabel: rangeSpanLabel(compareRange),
+        ariaLabel: 'Reach: range A against range B',
+        source: source.source,
+        note: `Comparing ${rangeSpanLabel(primaryRange)} against ${rangeSpanLabel(compareRange)}, aligned bucket by bucket.${granularityNote(resolved)}${granularityNote(resolvedCompare)}`
+      });
+    return;
+  }
+
+  const buckets = resolved.local
+    ? buildAccountDailyReach(resolved.points, range)
+    : resolved.points.map((point) => ({ key: point.key, label: point.label, value: metricNumber(point.value, 0), content: null }));
   if (!buckets.some((bucket) => bucket.value > 0)) {
     els.reachChart.innerHTML = '<div class="chart-empty">No reach in this date range</div>';
     return;
@@ -1807,7 +2233,7 @@ function renderAccountDailyReachChart(content) {
   renderAccountReachBars(buckets, {
     mode: 'day',
     legend: source.legend,
-    note: source.note,
+    note: source.note + granularityNote(resolved),
     source: source.source,
     sourceType: source.type,
     axisLabel: 'Day',
@@ -1926,96 +2352,6 @@ function renderAccountReachBars(buckets, options) {
       <text class="chart-axis-label" x="16" y="${padding.top + innerHeight / 2}" text-anchor="middle" transform="rotate(-90 16 ${padding.top + innerHeight / 2})">Reach</text>
     </svg>
     <p class="chart-note">${escapeHtml(options.note)}</p>
-  `;
-}
-
-function toggleReachCalendar(force) {
-  if (!els.reachCalendar) return;
-  if (state.reachGranularity !== 'day') {
-    els.reachCalendar.setAttribute('hidden', '');
-    els.reachRangeTrigger?.setAttribute('aria-expanded', 'false');
-    return;
-  }
-  const shouldOpen = typeof force === 'boolean' ? force : els.reachCalendar.hasAttribute('hidden');
-  if (shouldOpen) {
-    togglePerformanceCalendar(false);
-    toggleFollowerCalendar(false);
-    const range = activeAccountReachRange(reachDailySource(chartContent()).points);
-    const base = range ? range.end : new Date();
-    state.reachCal = { view: new Date(base.getFullYear(), base.getMonth(), 1), pendingStart: null };
-    renderReachCalendar();
-    els.reachCalendar.removeAttribute('hidden');
-    els.reachRangeTrigger.setAttribute('aria-expanded', 'true');
-  } else {
-    els.reachCalendar.setAttribute('hidden', '');
-    els.reachRangeTrigger.setAttribute('aria-expanded', 'false');
-  }
-}
-
-function pickReachDay(key) {
-  const cal = state.reachCal;
-  if (!cal) return;
-  if (!cal.pendingStart) {
-    cal.pendingStart = key;
-    renderReachCalendar();
-    return;
-  }
-  state.reachRange = cal.pendingStart <= key
-    ? { start: cal.pendingStart, end: key }
-    : { start: key, end: cal.pendingStart };
-  cal.pendingStart = null;
-  toggleReachCalendar(false);
-  renderCharts();
-}
-
-function renderReachCalendar() {
-  const cal = state.reachCal;
-  if (!cal) return;
-
-  const view = cal.view;
-  const year = view.getFullYear();
-  const month = view.getMonth();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const lead = new Date(year, month, 1).getDay();
-  const todayKey = dayKey(new Date());
-
-  const source = reachDailySource(chartContent());
-  const dataDays = new Set(source.points.map((point) => point.key).filter(Boolean));
-
-  const active = activeAccountReachRange(source.points);
-  const rangeStart = cal.pendingStart || (active && dayKey(active.start));
-  const rangeEnd = cal.pendingStart ? null : (active && dayKey(active.end));
-
-  const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month, 1));
-  const blanks = Array.from({ length: lead }, () => '<span class="cal-blank"></span>').join('');
-  const cells = Array.from({ length: daysInMonth }, (_, indexNo) => {
-    const day = indexNo + 1;
-    const key = dayKey(new Date(year, month, day));
-    const classes = ['cal-day'];
-    if (rangeStart && rangeEnd && key >= rangeStart && key <= rangeEnd) classes.push('in-range');
-    if (key === rangeStart) classes.push('is-start');
-    if (key === rangeEnd) classes.push('is-end');
-    if (key === todayKey) classes.push('is-today');
-    if (dataDays.has(key)) classes.push('has-data');
-    return `<button class="${classes.join(' ')}" type="button" data-cal-day="${key}">${day}</button>`;
-  }).join('');
-
-  const selection = cal.pendingStart
-    ? `From ${shortDate(cal.pendingStart)} — pick an end day`
-    : (active ? `${shortDate(dayKey(active.start))} – ${shortDate(dayKey(active.end))}` : 'Pick a start day');
-
-  els.reachCalendar.innerHTML = `
-    <div class="cal-head">
-      <button class="cal-nav" type="button" data-cal-nav="-1" aria-label="Previous month">‹</button>
-      <strong>${escapeHtml(monthLabel)}</strong>
-      <button class="cal-nav" type="button" data-cal-nav="1" aria-label="Next month">›</button>
-    </div>
-    <div class="cal-grid cal-weekdays"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>
-    <div class="cal-grid cal-days">${blanks}${cells}</div>
-    <div class="cal-foot">
-      <span class="cal-selection">${escapeHtml(selection)}</span>
-      <button class="cal-reset" type="button" data-cal-reset>All available</button>
-    </div>
   `;
 }
 
@@ -2498,6 +2834,26 @@ function renderAudience() {
 
 // Account-level windowed totals + reach split (followers vs non-followers). All real:
 // in demo mode accountInsights is unavailable, so this shows a connect prompt, not fake data.
+// /api/insights/range returns camelCase metric names; ai.byWindow uses Meta's raw names.
+function rangeTotalsToWindowShape(totals = {}) {
+  return {
+    views: totals.views,
+    reach: totals.reach,
+    accounts_engaged: totals.accountsEngaged,
+    total_interactions: totals.interactions,
+    profile_views: totals.profileViews
+  };
+}
+
+function updateAccountRangeLabel() {
+  if (!els.accountRangeLabel) return;
+  const range = normalizedRange(state.accountRange);
+  els.accountRangeLabel.textContent = withCompareSuffix(
+    range ? rangeChipLabel(range) : 'Custom range',
+    state.accountCompareRange
+  );
+}
+
 function renderAccountInsights() {
   if (!els.accountInsights) return;
   const ai = state.data.accountInsights;
@@ -2520,28 +2876,63 @@ function renderAccountInsights() {
     if (selected) els.accountWindow.value = selected;
   }
 
-  const totals = (selected && ai.byWindow?.[selected]) || {};
+  updateAccountRangeLabel();
+  const customRange = normalizedRange(state.accountRange);
+  const compareRange = normalizedRange(state.accountCompareRange);
+
+  let totals = (selected && ai.byWindow?.[selected]) || {};
+  let follow = (selected && ai.reachByFollowType?.[selected]) || {};
+  let windowLabel = selectedLabel;
+  let compareTotals = null;
+  let compareLabel = '';
+
+  // A custom range is fetched from Instagram on Apply, not pre-loaded like the presets.
+  if (customRange) {
+    const entry = requestRangeData('performance', customRange, renderAccountInsights);
+    if (entry.status !== 'ready') {
+      els.accountInsights.innerHTML = rangeStatusHtml(entry, customRange) + note;
+      return;
+    }
+    totals = rangeTotalsToWindowShape(entry.payload.totals);
+    follow = entry.payload.reachByFollowType || {};
+    windowLabel = rangeSpanLabel(customRange);
+  }
+  if (compareRange) {
+    const entry = requestRangeData('performance', compareRange, renderAccountInsights);
+    if (entry.status !== 'ready') {
+      els.accountInsights.innerHTML = rangeStatusHtml(entry, compareRange) + note;
+      return;
+    }
+    compareTotals = rangeTotalsToWindowShape(entry.payload.totals);
+    compareLabel = rangeSpanLabel(compareRange);
+  }
+
   const tiles = [
-    ['Views', totals.views],
-    ['Reach', totals.reach],
-    ['Accounts engaged', totals.accounts_engaged],
-    ['Interactions', totals.total_interactions],
-    ['Profile views', totals.profile_views]
-  ].filter(([, value]) => isMetricKnown(value));
+    ['Views', 'views'],
+    ['Reach', 'reach'],
+    ['Accounts engaged', 'accounts_engaged'],
+    ['Interactions', 'total_interactions'],
+    ['Profile views', 'profile_views']
+  ].filter(([, key]) => isMetricKnown(totals[key]));
+
+  const compareHead = compareTotals
+    ? `<p class="ai-compare-head">${escapeHtml(windowLabel)} <span>vs</span> ${escapeHtml(compareLabel)}</p>`
+    : '';
 
   const tileHtml = tiles.length
-    ? `<div class="ai-tiles">${tiles.map(([label, value]) => `
-        <div class="ai-tile"><span>${escapeHtml(label)}</span><strong>${compactNumber(value)}</strong><small>${formatNumber(value)}</small></div>
-      `).join('')}</div>`
+    ? `${compareHead}<div class="ai-tiles">${tiles.map(([label, key]) => {
+        const value = totals[key];
+        const delta = compareTotals ? deltaBadge(value, compareTotals[key]) : '';
+        return `<div class="ai-tile"><span>${escapeHtml(label)}</span><strong>${compactNumber(value)}</strong><small>${formatNumber(value)}</small>${delta}</div>`;
+      }).join('')}</div>`
     : '<p class="gx-missing">No windowed totals returned for this account.</p>';
 
-  const follow = (selected && ai.reachByFollowType?.[selected]) || {};
   const followers = metricNumber(follow.FOLLOWER, 0);
   const nonFollowers = metricNumber(follow.NON_FOLLOWER, 0);
   const followTotal = followers + nonFollowers;
   const splitHtml = followTotal > 0
     ? `<div class="ai-split">
-        <div class="ai-split-head"><span>Reach source</span><small>${escapeHtml(selectedLabel)}</small></div>
+        <div class="ai-split-head"><span>Reach source</span><small>${escapeHtml(windowLabel)}</small></div>
         <div class="ai-split-bar" role="img" aria-label="Reach by follow type">
           <span class="seg non-follower" style="width:${(nonFollowers / followTotal * 100).toFixed(1)}%"></span>
           <span class="seg follower" style="width:${(followers / followTotal * 100).toFixed(1)}%"></span>
@@ -2614,10 +3005,20 @@ function renderLegacyFollowerGrowth() {
 function renderFollowerGrowth() {
   const account = state.data.account;
   const trend = state.data.summary.followerTrend || { available: false, dayNet: 0, weekNet: 0, series: [] };
-  const rawSeries = trend.series || [];
+  const rawSeries = (trend.series || []).map((point) => ({ ...point, key: point.date }));
   const range = activeFollowerRange(rawSeries);
   updateFollowerRangeLabel(range);
-  const series = followerSeriesForRange(rawSeries, range);
+
+  const primaryRange = normalizedRange(state.followerRange)
+    || (range ? { start: dayKey(range.start), end: dayKey(range.end) } : null);
+  const resolved = resolveRangePoints('follower', primaryRange, rawSeries, renderFollowerGrowth);
+  if (resolved.status === 'loading' || resolved.status === 'error') {
+    els.followerGrowth.innerHTML = rangeStatusHtml(resolved, primaryRange);
+    return;
+  }
+  const series = resolved.local
+    ? followerSeriesForRange(rawSeries, range)
+    : resolved.points;
   const stats = followerRangeStats(series);
   const lastPoint = series[series.length - 1] || null;
   const rangeLabel = series.length
@@ -2798,92 +3199,9 @@ function updateFollowerRangeLabel(range) {
     els.followerRangeLabel.textContent = 'No data';
     return;
   }
-  els.followerRangeLabel.textContent = state.followerRange?.start
+  els.followerRangeLabel.textContent = withCompareSuffix(state.followerRange?.start
     ? `${shortDate(dayKey(range.start))} - ${shortDate(dayKey(range.end))}`
-    : 'All available';
-}
-
-function toggleFollowerCalendar(force) {
-  if (!els.followerCalendar) return;
-  const shouldOpen = typeof force === 'boolean' ? force : els.followerCalendar.hasAttribute('hidden');
-  if (shouldOpen) {
-    togglePerformanceCalendar(false);
-    toggleReachCalendar(false);
-    const range = activeFollowerRange(state.data?.summary?.followerTrend?.series || []);
-    const base = range ? range.end : new Date();
-    state.followerCal = { view: new Date(base.getFullYear(), base.getMonth(), 1), pendingStart: null };
-    renderFollowerCalendar();
-    els.followerCalendar.removeAttribute('hidden');
-    els.followerRangeTrigger?.setAttribute('aria-expanded', 'true');
-  } else {
-    els.followerCalendar.setAttribute('hidden', '');
-    els.followerRangeTrigger?.setAttribute('aria-expanded', 'false');
-  }
-}
-
-function pickFollowerDay(key) {
-  const cal = state.followerCal;
-  if (!cal) return;
-  if (!cal.pendingStart) {
-    cal.pendingStart = key;
-    renderFollowerCalendar();
-    return;
-  }
-  state.followerRange = cal.pendingStart <= key
-    ? { start: cal.pendingStart, end: key }
-    : { start: key, end: cal.pendingStart };
-  cal.pendingStart = null;
-  toggleFollowerCalendar(false);
-  renderFollowerGrowth();
-}
-
-function renderFollowerCalendar() {
-  const cal = state.followerCal;
-  if (!cal) return;
-
-  const view = cal.view;
-  const year = view.getFullYear();
-  const month = view.getMonth();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const lead = new Date(year, month, 1).getDay();
-  const todayKey = dayKey(new Date());
-  const series = state.data?.summary?.followerTrend?.series || [];
-  const dataDays = new Set(series.map((point) => point.date).filter(Boolean));
-  const active = activeFollowerRange(series);
-  const rangeStart = cal.pendingStart || (active && dayKey(active.start));
-  const rangeEnd = cal.pendingStart ? null : (active && dayKey(active.end));
-
-  const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month, 1));
-  const blanks = Array.from({ length: lead }, () => '<span class="cal-blank"></span>').join('');
-  const cells = Array.from({ length: daysInMonth }, (_, indexNo) => {
-    const day = indexNo + 1;
-    const key = dayKey(new Date(year, month, day));
-    const classes = ['cal-day'];
-    if (rangeStart && rangeEnd && key >= rangeStart && key <= rangeEnd) classes.push('in-range');
-    if (key === rangeStart) classes.push('is-start');
-    if (key === rangeEnd) classes.push('is-end');
-    if (key === todayKey) classes.push('is-today');
-    if (dataDays.has(key)) classes.push('has-data');
-    return `<button class="${classes.join(' ')}" type="button" data-follower-cal-day="${key}">${day}</button>`;
-  }).join('');
-
-  const selection = cal.pendingStart
-    ? `From ${shortDate(cal.pendingStart)} - pick an end day`
-    : (active ? `${shortDate(dayKey(active.start))} - ${shortDate(dayKey(active.end))}` : 'Pick a start day');
-
-  els.followerCalendar.innerHTML = `
-    <div class="cal-head">
-      <button class="cal-nav" type="button" data-follower-cal-nav="-1" aria-label="Previous month">&lt;</button>
-      <strong>${escapeHtml(monthLabel)}</strong>
-      <button class="cal-nav" type="button" data-follower-cal-nav="1" aria-label="Next month">&gt;</button>
-    </div>
-    <div class="cal-grid cal-weekdays"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span></div>
-    <div class="cal-grid cal-days">${blanks}${cells}</div>
-    <div class="cal-foot">
-      <span class="cal-selection">${escapeHtml(selection)}</span>
-      <button class="cal-reset" type="button" data-follower-cal-all>All available</button>
-    </div>
-  `;
+    : 'All available', state.followerCompareRange);
 }
 
 function renderGenderBreakdown() {
@@ -2909,6 +3227,23 @@ function renderGenderBreakdown() {
     if (selected) els.genderTimeframe.value = selected;
   }
 
+  // Demographics are lifetime metrics with fixed Meta timeframes - no arbitrary since/until -
+  // so the comparison picks a second preset. Every timeframe is already loaded, so this is free.
+  const compareOptions = timeframes.filter((tf) => tf !== selected);
+  const compareTf = compareOptions.includes(state.audienceCompareTimeframe) ? state.audienceCompareTimeframe : null;
+  if (els.genderCompare && els.genderCompareLabel) {
+    els.genderCompareLabel.hidden = compareOptions.length === 0;
+    els.genderCompare.innerHTML = `<option value="">None</option>${compareOptions
+      .map((tf) => `<option value="${tf}">${escapeHtml(timeframeLabel(tf))}</option>`)
+      .join('')}`;
+    els.genderCompare.value = compareTf || '';
+  }
+  const reachCompare = (compareTf && audience.reachByGender?.[compareTf]) || null;
+  const engagedCompare = (compareTf && audience.engagedByGender?.[compareTf]) || null;
+  const profileViewsCompare = (compareTf && audience.profileViewsByTimeframe?.[compareTf] != null)
+    ? audience.profileViewsByTimeframe[compareTf]
+    : null;
+
   const followersGender = audience.followers?.gender || {};
   const reach = (selected && audience.reachByGender?.[selected]) || {};
   const engaged = (selected && audience.engagedByGender?.[selected]) || {};
@@ -2917,7 +3252,7 @@ function renderGenderBreakdown() {
     : null;
   const present = ['F', 'M', 'U'].filter((code) => followersGender[code] || reach[code] || engaged[code]);
 
-  const block = (title, map, window) => {
+  const block = (title, map, window, compareMap) => {
     const total = sumValues(map);
     if (!total) {
       return `<div class="gx-metric">
@@ -2925,15 +3260,17 @@ function renderGenderBreakdown() {
         <p class="gx-missing">Not returned by Instagram for this account / API version.</p>
       </div>`;
     }
+    const compareTotal = compareMap ? sumValues(compareMap) : null;
     return `<div class="gx-metric">
-      <div class="gx-metric-head"><span>${escapeHtml(title)}</span><small>${escapeHtml(window || compactNumber(total) + ' total')}</small></div>
+      <div class="gx-metric-head"><span>${escapeHtml(title)}</span><small>${escapeHtml(window || compactNumber(total) + ' total')}</small>${compareTotal === null ? '' : deltaBadge(total, compareTotal)}</div>
       ${present.map((code) => {
         const value = map[code] || 0;
         const share = total ? value / total : 0;
-        return `<div class="gx-row">
+        return `<div class="gx-row${compareMap ? ' has-compare' : ''}">
           <span class="gx-name"><i style="background:${GENDER_COLORS[code]}"></i>${escapeHtml(genderLabel(code))}</span>
           <div class="gx-track"><span style="width:${(share * 100).toFixed(1)}%;background:${GENDER_COLORS[code]}"></span></div>
           <strong>${percent(share)} <small>${compactNumber(value)}</small></strong>
+          ${compareMap ? deltaBadge(value, compareMap[code]) : ''}
         </div>`;
       }).join('')}
     </div>`;
@@ -2942,12 +3279,13 @@ function renderGenderBreakdown() {
   els.genderBreakdown.innerHTML = `
     <div class="gx-wrap">
       ${block('Followers', followersGender, 'lifetime')}
-      ${block('Reach', reach, timeframeLabel(selected))}
-      ${block('Interactions', engaged, timeframeLabel(selected))}
+      ${block('Reach', reach, timeframeLabel(selected), reachCompare)}
+      ${block('Interactions', engaged, timeframeLabel(selected), engagedCompare)}
     </div>
+    ${compareTf ? `<p class="gx-compare-head">${escapeHtml(timeframeLabel(selected))} <span>vs</span> ${escapeHtml(timeframeLabel(compareTf))}</p>` : ''}
     <div class="gx-views">
       <div><span>Views (total)</span><strong>${metricCompact(state.data.summary.totalViews)}</strong></div>
-      <div><span>Profile views${selected ? ` · ${escapeHtml(timeframeLabel(selected))}` : ''}</span><strong>${profileViews != null ? compactNumber(profileViews) : '—'}</strong></div>
+      <div><span>Profile views${selected ? ` · ${escapeHtml(timeframeLabel(selected))}` : ''}</span><strong>${profileViews != null ? compactNumber(profileViews) : '—'}</strong>${profileViewsCompare != null && profileViews != null ? deltaBadge(profileViews, profileViewsCompare) : ''}</div>
       <small>Totals only - Instagram doesn't split views or profile views by gender</small>
     </div>
     ${note}

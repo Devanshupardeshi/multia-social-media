@@ -1760,6 +1760,250 @@ input::placeholder {
   background: var(--surface-raised);
 }
 
+/* Range A / Range B targets in the shared calendar. */
+.cal-targets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.cal-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cal-target span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cal-target strong {
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.cal-target:hover {
+  background: var(--surface-raised);
+}
+
+.cal-target.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.cal-day.in-compare {
+  box-shadow: inset 0 -3px 0 var(--border-strong);
+}
+
+.cal-day.is-pending {
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.cal-day[disabled] {
+  color: var(--border-strong);
+  cursor: not-allowed;
+}
+
+.cal-day[disabled]:hover {
+  background: transparent;
+}
+
+.cal-nav[disabled] {
+  color: var(--border-strong);
+  cursor: not-allowed;
+}
+
+.cal-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.cal-apply {
+  padding: 5px 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-small);
+  background: var(--primary);
+  color: var(--bg);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cal-apply:hover {
+  background: var(--primary-dark);
+}
+
+.cal-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+/* Two-range comparison: A is solid ink, B is a muted grey behind it. */
+.compare-summary {
+  margin-bottom: 12px;
+}
+
+.cmp-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.cmp-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-bar.cmp-a {
+  background: var(--ink);
+}
+
+.legend-bar.cmp-b {
+  background: var(--border-strong);
+}
+
+.cmp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.cmp-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+}
+
+.cmp-metric {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cmp-cell strong {
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmp-prev {
+  color: var(--subtle);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmp-pct {
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmp-cell.up .cmp-pct {
+  color: var(--success);
+}
+
+.cmp-cell.down .cmp-pct {
+  color: var(--danger);
+}
+
+.cmp-cell.flat .cmp-pct {
+  color: var(--muted);
+}
+
+.chart-bar.cmp-a {
+  fill: var(--ink);
+}
+
+.chart-bar.cmp-b {
+  fill: var(--border-strong);
+}
+
+.chart-label.cmp-b-label {
+  fill: var(--subtle);
+}
+
+.chart-empty.is-loading {
+  color: var(--muted);
+}
+
+/* Panel headers that carry more than one control (preset window + range picker). */
+.header-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.delta-badge {
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.delta-badge.up {
+  color: var(--success);
+}
+
+.delta-badge.down {
+  color: var(--danger);
+}
+
+.delta-badge.flat {
+  color: var(--muted);
+}
+
+.ai-compare-head,
+.gx-compare-head {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.ai-compare-head span,
+.gx-compare-head span {
+  color: var(--subtle);
+  font-weight: 500;
+}
+
+.ai-tile .delta-badge {
+  margin-top: 2px;
+}
+
+.gx-row.has-compare {
+  grid-template-columns: minmax(72px, 0.9fr) minmax(60px, 1.2fr) auto auto;
+}
+
+.gx-row .delta-badge {
+  margin-left: 8px;
+}
+
+
+
 
 .chart-label {
   fill: var(--muted);
