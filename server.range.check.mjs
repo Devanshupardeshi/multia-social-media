@@ -5,7 +5,7 @@ process.env.VERCEL = '1';
 
 import assert from 'node:assert/strict';
 
-const { rangeWindows } = await import('./server.mjs');
+const { rangeWindows, anchorFollowerSeries } = await import('./server.mjs');
 
 const DAY = 86400;
 const sec = (iso) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 1000);
@@ -82,3 +82,60 @@ function assertContiguous(label, result, since, until) {
 }
 
 console.log('rangeWindows: all checks passed');
+
+// --- anchorFollowerSeries -------------------------------------------------
+// Instagram gives no historical follower total, so totals are today's count walked back
+// through net movement. Getting the anchor wrong silently reports today's count for a
+// range that ended months ago, which is exactly the bug this guards.
+
+// 7. A range ending today anchors its last bucket to the current count.
+{
+  const series = [{ net: 10 }, { net: -4 }, { net: 6 }];
+  const { endFollowers, startFollowers } = anchorFollowerSeries(series, 1000, 0);
+  assert.equal(endFollowers, 1000, 'last bucket must equal the current count');
+  assert.equal(series[2].followers, 1000);
+  assert.equal(series[1].followers, 994);   // 1000 - 6
+  assert.equal(series[0].followers, 998);   // 994 + 4
+  assert.equal(startFollowers, 988);        // 998 - 10
+  assert.equal(endFollowers - startFollowers, 10 - 4 + 6, 'end - start must equal total net');
+}
+
+// 8. A historical range is anchored to its own end date, NOT to today.
+{
+  const series = [{ net: 100 }, { net: 50 }];
+  // 438 followers were gained after the range closed.
+  const { endFollowers, startFollowers } = anchorFollowerSeries(series, 2207, 438);
+  assert.equal(endFollowers, 1769, 'end total must exclude movement after the range');
+  assert.notEqual(endFollowers, 2207, 'must not report today’s count for a past range');
+  assert.equal(series[1].followers, 1769);
+  assert.equal(series[0].followers, 1719);
+  assert.equal(startFollowers, 1619);
+  assert.equal(endFollowers - startFollowers, 150);
+}
+
+// 9. Negative net (a shrinking account) walks back upward, and a tail can be negative too.
+{
+  const series = [{ net: -20 }, { net: -30 }];
+  const { endFollowers, startFollowers } = anchorFollowerSeries(series, 500, -10);
+  assert.equal(endFollowers, 510, 'a negative tail means the account was larger at range end');
+  assert.equal(startFollowers, 560);
+  assert.equal(endFollowers - startFollowers, -50);
+}
+
+// 10. Missing/!finite inputs degrade to 0 rather than poisoning the series with NaN.
+{
+  const series = [{ net: 5 }, {}];
+  const { endFollowers, startFollowers } = anchorFollowerSeries(series, undefined, undefined);
+  assert.equal(endFollowers, 0);
+  assert.equal(startFollowers, -5);
+  assert.ok(series.every((point) => Number.isFinite(point.followers)), 'no NaN totals');
+}
+
+// 11. An empty series returns the same value at both ends instead of throwing.
+{
+  const { endFollowers, startFollowers } = anchorFollowerSeries([], 1234, 34);
+  assert.equal(endFollowers, 1200);
+  assert.equal(startFollowers, 1200);
+}
+
+console.log('anchorFollowerSeries: all checks passed');

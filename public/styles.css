@@ -2002,6 +2002,57 @@ input::placeholder {
   margin-left: 8px;
 }
 
+/* Follower comparison: one card per range, each anchored to its own end date. */
+.fg-range-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.fg-range-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+}
+
+.fg-range-tag {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fg-range-move,
+.fg-range-growth {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.fg-range-growth {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.fg-chart-tag {
+  margin: 10px 0 2px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.fg-chart-tag:first-child {
+  margin-top: 0;
+}
+
+
 
 
 

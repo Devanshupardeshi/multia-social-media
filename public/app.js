@@ -485,6 +485,7 @@ function resolveRangePoints(panelKey, range, localPoints, onDone) {
     status: 'ready',
     granularity: entry.payload.granularity,
     local: false,
+    payload: entry.payload,
     points: entry.payload.series.map(mapBucket)
   };
 }
@@ -3002,6 +3003,106 @@ function renderLegacyFollowerGrowth() {
   `;
 }
 
+// Instagram never reports a historical follower total - only daily movement. Every total
+// here is today's count walked backwards through net change, which is why the end-of-range
+// figure is the one to trust and the start figure is derived from it.
+function followerRangeSummary(series) {
+  if (!series.length) return null;
+  const gained = series.reduce((sum, point) => sum + metricNumber(point.gained, 0), 0);
+  const lost = series.reduce((sum, point) => sum + metricNumber(point.lost, 0), 0);
+  const net = gained - lost;
+  const endFollowers = metricNumber(series[series.length - 1].followers, null);
+  const startFollowers = endFollowers === null ? null : endFollowers - net;
+  return {
+    gained,
+    lost,
+    net,
+    endFollowers,
+    startFollowers,
+    startDate: series[0].startDate || series[0].date,
+    endDate: series[series.length - 1].endDate || series[series.length - 1].date,
+    // Growth against the count the range opened with, not against today's total.
+    growthPct: startFollowers ? (net / startFollowers) * 100 : null
+  };
+}
+
+function pctChange(current, previous) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
+  return ((current - previous) / Math.abs(previous)) * 100;
+}
+
+function pctText(pct) {
+  return pct === null ? 'n/a' : `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+}
+
+// Percentage change is only meaningful for counts that cannot go negative. Net follower
+// change can flip sign, so that one is reported as a plain difference instead.
+function followerCompareCells(a, b) {
+  const rows = [
+    { label: 'Followers at end', value: a.endFollowers, prev: b.endFollowers, mode: 'pct' },
+    { label: 'Gained', value: a.gained, prev: b.gained, mode: 'pct' },
+    { label: 'Lost', value: a.lost, prev: b.lost, mode: 'pct', invert: true },
+    { label: 'Net change', value: a.net, prev: b.net, mode: 'diff' },
+    { label: 'Growth rate', value: a.growthPct, prev: b.growthPct, mode: 'points' }
+  ];
+
+  return rows.map((row) => {
+    if (row.value === null || row.value === undefined) return '';
+    let main;
+    let note;
+    let direction;
+
+    if (row.mode === 'points') {
+      const diff = (row.prev === null || row.prev === undefined) ? null : row.value - row.prev;
+      main = row.value === null ? '—' : pctText(row.value);
+      note = row.prev === null || row.prev === undefined ? 'vs n/a' : `vs ${pctText(row.prev)}`;
+      direction = diff === null || diff === 0 ? 'flat' : (diff > 0 ? 'up' : 'down');
+      return cell(row.label, main, note, direction, diff === null ? '' : `${diff > 0 ? '+' : ''}${diff.toFixed(1)} pts`);
+    }
+
+    if (row.mode === 'diff') {
+      const diff = row.value - metricNumber(row.prev, 0);
+      main = signedCompact(row.value);
+      note = `vs ${signedCompact(metricNumber(row.prev, 0))}`;
+      direction = diff === 0 ? 'flat' : (diff > 0 ? 'up' : 'down');
+      return cell(row.label, main, note, direction, `${diff > 0 ? '+' : ''}${formatNumber(diff)}`);
+    }
+
+    const pct = pctChange(row.value, metricNumber(row.prev, 0));
+    // Exact counts, not compact: "2K vs 2K" hides the difference these cells exist to show.
+    main = formatNumber(row.value);
+    note = `vs ${formatNumber(metricNumber(row.prev, 0))}`;
+    // More unfollows is a worse outcome, so the colour flips for "Lost".
+    const rising = pct !== null && pct > 0;
+    direction = pct === null || pct === 0 ? 'flat' : ((rising !== Boolean(row.invert)) ? 'up' : 'down');
+    return cell(row.label, main, note, direction, pctText(pct));
+  }).join('');
+
+  function cell(label, main, note, direction, badge) {
+    return `
+      <div class="cmp-cell ${direction}">
+        <span class="cmp-metric">${escapeHtml(label)}</span>
+        <strong>${escapeHtml(main)}</strong>
+        <span class="cmp-prev">${escapeHtml(note)}</span>
+        <span class="cmp-pct">${escapeHtml(badge)}</span>
+      </div>`;
+  }
+}
+
+function followerRangeCard(tag, summary, incomplete) {
+  const endLabel = summary.endDate ? shortDate(summary.endDate) : '';
+  const startLabel = summary.startDate ? shortDate(summary.startDate) : '';
+  return `
+    <div class="fg-range-card">
+      <span class="fg-range-tag">${escapeHtml(tag)} · ${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</span>
+      <span class="fg-label">Followers on ${escapeHtml(endLabel)}</span>
+      <strong class="fg-value">${summary.endFollowers === null ? '—' : compactNumber(summary.endFollowers)}</strong>
+      <span class="fg-exact">${summary.endFollowers === null ? 'Total unavailable' : `${formatNumber(summary.endFollowers)} total`}${summary.startFollowers === null ? '' : ` · started at ${formatNumber(summary.startFollowers)}`}</span>
+      <span class="fg-range-move">${signedCompact(summary.net)} net · ${formatNumber(summary.gained)} gained · ${formatNumber(summary.lost)} lost${incomplete ? ' (partial)' : ''}</span>
+      <span class="fg-range-growth">Growth ${escapeHtml(pctText(summary.growthPct))}</span>
+    </div>`;
+}
+
 function renderFollowerGrowth() {
   const account = state.data.account;
   const trend = state.data.summary.followerTrend || { available: false, dayNet: 0, weekNet: 0, series: [] };
@@ -3016,17 +3117,24 @@ function renderFollowerGrowth() {
     els.followerGrowth.innerHTML = rangeStatusHtml(resolved, primaryRange);
     return;
   }
-  const series = resolved.local
-    ? followerSeriesForRange(rawSeries, range)
-    : resolved.points;
+
+  const compareRange = normalizedRange(state.followerCompareRange);
+  const resolvedCompare = compareRange
+    ? resolveRangePoints('follower', compareRange, rawSeries, renderFollowerGrowth)
+    : null;
+  if (resolvedCompare && (resolvedCompare.status === 'loading' || resolvedCompare.status === 'error')) {
+    els.followerGrowth.innerHTML = rangeStatusHtml(resolvedCompare, compareRange);
+    return;
+  }
+
+  const series = resolved.points;
   const stats = followerRangeStats(series);
+  const summary = followerRangeSummary(series);
   const lastPoint = series[series.length - 1] || null;
-  const rangeLabel = series.length
-    ? `${shortDate(series[0].date)} - ${shortDate(series[series.length - 1].date)}`
+  const rangeLabel = summary
+    ? `${shortDate(summary.startDate)} - ${shortDate(summary.endDate)}`
     : 'No range';
-  const sourceLabel = trend.source === 'graph-api'
-    ? 'Graph API daily follower movement'
-    : 'Demo follower movement';
+  const lostIncomplete = resolved.payload?.lostComplete === false;
 
   const chip = (label, value, note) => {
     const cls = value > 0 ? 'up' : value < 0 ? 'down' : 'flat';
@@ -3037,12 +3145,48 @@ function renderFollowerGrowth() {
     ? renderFollowerMovementChart(series)
     : `<p class="panel-footnote">${escapeHtml(trend.reason || 'Follower movement chart needs daily Graph API follower rows.')}</p>`;
 
+  const footnote = `<p class="panel-footnote">Graph API provides daily new followers and aggregate follow/unfollow counts. It does not reveal individual users. Instagram never returns a historical follower total, so each total here is today's count walked back through daily net movement.${lostIncomplete ? ' Instagram declined part of the unfollow data for this range, so "lost" is understated.' : ''}</p>`;
+
+  // Comparison view: two ranges side by side, each anchored to its own end date.
+  const compareSummary = resolvedCompare ? followerRangeSummary(resolvedCompare.points) : null;
+  if (compareSummary && summary) {
+    const compareChart = resolvedCompare.points.length >= 2
+      ? renderFollowerMovementChart(resolvedCompare.points)
+      : '<p class="panel-footnote">Not enough buckets to chart this range.</p>';
+    els.followerGrowth.innerHTML = `
+      <div class="fg-range-grid">
+        ${followerRangeCard('Range A', summary, lostIncomplete)}
+        ${followerRangeCard('Range B', compareSummary, resolvedCompare.payload?.lostComplete === false)}
+      </div>
+      <div class="compare-summary">
+        <div class="cmp-grid">${followerCompareCells(summary, compareSummary)}</div>
+      </div>
+      <div class="fg-spark">
+        <p class="fg-chart-tag">Range A · ${escapeHtml(rangeLabel)}</p>
+        ${chart}
+        <p class="fg-chart-tag">Range B · ${escapeHtml(`${shortDate(compareSummary.startDate)} - ${shortDate(compareSummary.endDate)}`)}</p>
+        ${compareChart}
+      </div>
+      ${footnote}
+    `;
+    return;
+  }
+
+  // Single range: name the end date whenever it is not today, so the headline total is
+  // never mistaken for the live follower count.
+  const endsToday = !summary || summary.endDate === dayKey(new Date());
+  const heroLabel = endsToday ? 'Current followers' : `Followers on ${shortDate(summary.endDate)}`;
+  const heroValue = endsToday || summary.endFollowers === null ? account.followers : summary.endFollowers;
+  const heroExact = endsToday
+    ? `${formatNumber(account.followers)} total - ${formatNumber(account.follows)} following`
+    : `${formatNumber(heroValue)} total · ${formatNumber(account.followers)} today`;
+
   els.followerGrowth.innerHTML = `
     <div class="fg-top">
       <div class="fg-hero">
-        <span class="fg-label">Current followers</span>
-        <strong class="fg-value">${compactNumber(account.followers)}</strong>
-        <span class="fg-exact">${formatNumber(account.followers)} total - ${formatNumber(account.follows)} following</span>
+        <span class="fg-label">${escapeHtml(heroLabel)}</span>
+        <strong class="fg-value">${compactNumber(heroValue)}</strong>
+        <span class="fg-exact">${escapeHtml(heroExact)}</span>
       </div>
       <div class="fg-nets">
         ${chip('Net latest day', stats.dayNet, lastPoint ? shortDate(lastPoint.date) : '')}
@@ -3053,10 +3197,10 @@ function renderFollowerGrowth() {
     <div class="fg-summary">
       <div><span>Gained</span><strong>${formatNumber(stats.totalGained)}</strong><small>${escapeHtml(rangeLabel)}</small></div>
       <div><span>Lost</span><strong>${formatNumber(stats.totalLost)}</strong><small>unfollows / lost accounts</small></div>
-      <div><span>Chart source</span><strong>${escapeHtml(sourceLabel)}</strong><small>${trend.estimatedTotals ? 'Follower total line is estimated from current total + daily net' : 'Follower total is demo data'}</small></div>
+      <div><span>Growth</span><strong>${escapeHtml(pctText(summary?.growthPct ?? null))}</strong><small>${summary?.startFollowers ? `from ${formatNumber(summary.startFollowers)}` : 'start total unavailable'}</small></div>
     </div>
     <div class="fg-spark">${chart}</div>
-    <p class="panel-footnote">Graph API provides daily new followers and aggregate follow/unfollow counts. It does not reveal individual users, and historical total followers are estimated from current followers plus daily net movement.</p>
+    ${footnote}
   `;
 }
 
@@ -3166,16 +3310,6 @@ function activeFollowerRange(series) {
     return { start: startOfDay(parseKey(state.followerRange.start)), end: startOfDay(parseKey(state.followerRange.end)) };
   }
   return { start: bounds.min, end: bounds.max };
-}
-
-function followerSeriesForRange(series, range) {
-  if (!range) return [];
-  const startKey = dayKey(range.start);
-  const endKey = dayKey(range.end);
-  return series
-    .slice()
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .filter((point) => point.date >= startKey && point.date <= endKey);
 }
 
 function followerRangeStats(series) {

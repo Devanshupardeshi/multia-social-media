@@ -1217,11 +1217,8 @@ async function fetchFollowerGrowth(activeConfig, account, days = 90) {
       return { available: false, source: 'graph-api', reason: 'Meta returned no daily follower movement rows.', dayNet: 0, weekNet: 0, series: [] };
     }
 
-    let runningFollowers = toNumber(account.followers, 0);
-    for (let index = series.length - 1; index >= 0; index -= 1) {
-      series[index].followers = runningFollowers;
-      runningFollowers -= series[index].net;
-    }
+    // This window always ends today, so there is no movement after it to unwind.
+    anchorFollowerSeries(series, account.followers, 0);
 
     const dayNet = series[series.length - 1]?.net || 0;
     const week = series.slice(-7);
@@ -1413,14 +1410,45 @@ async function fetchRangeInsights(activeConfig, { since, until }) {
 
 // follower_count is a time series, so one call covers the whole span; only the unfollow
 // split needs a call per bucket.
+// Instagram never returns a historical follower total - only daily movement - so every
+// total is today's count walked backwards: first past the movement that happened after the
+// range ended (tailNet), then bucket by bucket through the range itself. Mutates `series`,
+// setting each bucket's end-of-bucket total, and returns the totals at both ends.
+export function anchorFollowerSeries(series, currentFollowers, tailNet = 0) {
+  let running = toNumber(currentFollowers, 0) - toNumber(tailNet, 0);
+  const endFollowers = running;
+  for (let index = series.length - 1; index >= 0; index -= 1) {
+    series[index].followers = running;
+    running -= toNumber(series[index].net, 0);
+  }
+  return { endFollowers, startFollowers: running };
+}
+
+// Total unfollows over one window. Meta answers this for any span in a single
+// total_value call, so a whole-period total costs one call, not one per bucket.
+async function unfollowsFor(id, { since, until }, activeConfig) {
+  const response = await graphGet(`/${id}/insights`, {
+    metric: 'follows_and_unfollows', period: 'day', metric_type: 'total_value',
+    breakdown: 'follow_type', since, until
+  }, activeConfig);
+  return toNumber(parseDemographic(response.data || []).NON_FOLLOWER, 0);
+}
+
 async function fetchRangeFollowers(activeConfig, account, { since, until }) {
   const id = activeConfig.instagramUserId;
+  const nowSec = Math.floor(Date.now() / 1000);
   const { granularity, windows } = rangeWindows(since, until);
+  const currentFollowers = toNumber(account?.followers, 0);
 
+  // Meta only reports follower movement, never a historical total. The only anchor is
+  // today's count, so gained/lost is fetched from the range start all the way to now and
+  // the movement after the range is subtracted back off. One time_series call covers the
+  // whole span, so the reach-back is free here and costs one extra call for the tail.
   let dailyGained = [];
   try {
     const response = await graphGet(`/${id}/insights`, {
-      metric: 'follower_count', period: 'day', metric_type: 'time_series', since, until
+      metric: 'follower_count', period: 'day', metric_type: 'time_series',
+      since, until: Math.max(until, nowSec)
     }, activeConfig);
     dailyGained = parseInsightTimeSeries(response.data || [], 'follower_count');
   } catch (error) {
@@ -1431,20 +1459,19 @@ async function fetchRangeFollowers(activeConfig, account, { since, until }) {
     return { available: false, granularity, series: [], reason: 'Meta returned no follower_count rows for this date range.' };
   }
 
+  const gainedBetween = (startDate, endDate) => dailyGained
+    .filter((point) => point.date >= startDate && point.date <= endDate)
+    .reduce((sum, point) => sum + toNumber(point.value, 0), 0);
+
+  let lostFailures = 0;
   const buckets = await mapLimit(windows, 4, async (window) => {
     let lost = 0;
     try {
-      const response = await graphGet(`/${id}/insights`, {
-        metric: 'follows_and_unfollows', period: 'day', metric_type: 'total_value',
-        breakdown: 'follow_type', since: window.since, until: window.until
-      }, activeConfig);
-      lost = toNumber(parseDemographic(response.data || []).NON_FOLLOWER, 0);
+      lost = await unfollowsFor(id, { since: window.since, until: window.until }, activeConfig);
     } catch {
-      lost = 0;
+      lostFailures += 1;
     }
-    const gained = dailyGained
-      .filter((point) => point.date >= window.startDate && point.date <= window.endDate)
-      .reduce((sum, point) => sum + toNumber(point.value, 0), 0);
+    const gained = gainedBetween(window.startDate, window.endDate);
     return {
       date: window.key, key: window.key, label: window.label,
       startDate: window.startDate, endDate: window.endDate,
@@ -1457,12 +1484,24 @@ async function fetchRangeFollowers(activeConfig, account, { since, until }) {
     return { available: false, granularity, series: [], reason: 'Meta returned no follower movement for this date range.' };
   }
 
-  // Walk today's follower count backwards through each bucket's net change.
-  let running = toNumber(account?.followers, 0);
-  for (let index = series.length - 1; index >= 0; index -= 1) {
-    series[index].followers = running;
-    running -= series[index].net;
+  // Net movement between the end of the range and today. Without this the last bucket
+  // would be handed today's follower count, which is wrong for any historical range.
+  const rangeEndDate = series[series.length - 1].endDate;
+  const todayDate = new Date(nowSec * 1000).toISOString().slice(0, 10);
+  let tailNet = 0;
+  let tailKnown = true;
+  if (rangeEndDate < todayDate) {
+    const tailFrom = new Date(Date.parse(`${rangeEndDate}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+    let tailLost = 0;
+    try {
+      tailLost = await unfollowsFor(id, { since: until + 1, until: nowSec }, activeConfig);
+    } catch {
+      tailKnown = false;
+    }
+    tailNet = gainedBetween(tailFrom, todayDate) - tailLost;
   }
+
+  const { endFollowers, startFollowers } = anchorFollowerSeries(series, currentFollowers, tailNet);
 
   const totalGained = series.reduce((sum, point) => sum + point.gained, 0);
   const totalLost = series.reduce((sum, point) => sum + point.lost, 0);
@@ -1473,7 +1512,14 @@ async function fetchRangeFollowers(activeConfig, account, { since, until }) {
     totalGained,
     totalLost,
     rangeNet: totalGained - totalLost,
-    currentFollowers: toNumber(account?.followers, 0),
+    // Followers at the end of the selected range, and just before it started.
+    endFollowers,
+    startFollowers,
+    endDate: rangeEndDate,
+    startDate: series[0].startDate,
+    currentFollowers,
+    // False when Meta declined an unfollow call, so "lost" is understated for that span.
+    lostComplete: lostFailures === 0 && tailKnown,
     estimatedTotals: true
   };
 }
