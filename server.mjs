@@ -96,9 +96,11 @@ function normalizeStoredUsers(raw) {
 }
 
 function normalizeStoredAccount(raw = {}) {
+  const stored = readStoredToken(raw.accessToken);
   return {
     instagramUserId: sanitizeInstagramUserId(raw.instagramUserId),
-    accessToken: normalizeAccessToken(readStoredToken(raw.accessToken)),
+    accessToken: normalizeAccessToken(stored.token),
+    ...(stored.sealed ? { sealedToken: stored.sealed } : {}),
     username: String(raw.username || ''),
     label: String(raw.label || ''),
     profilePictureUrl: String(raw.profilePictureUrl || ''),
@@ -112,9 +114,11 @@ function normalizeStoredAccount(raw = {}) {
 function normalizeStoredAds(raw) {
   const adAccountId = normalizeAdAccountId(raw?.adAccountId);
   if (!adAccountId) return null;
+  const stored = readStoredToken(raw.accessToken);
   return {
     adAccountId,
-    accessToken: normalizeAccessToken(readStoredToken(raw.accessToken)),
+    accessToken: normalizeAccessToken(stored.token),
+    ...(stored.sealed ? { sealedToken: stored.sealed } : {}),
     name: String(raw.name || ''),
     currency: String(raw.currency || ''),
     timezoneName: String(raw.timezoneName || '')
@@ -536,25 +540,46 @@ export function decryptSecret(value, key) {
 }
 
 // A token that can't be decrypted (missing or wrong key) loads as blank rather than taking
-// the whole store down; the account then shows up in /admin needing its token re-entered.
-function readStoredToken(value) {
+// the whole store down - but its ciphertext is kept as `sealed`. When local and Vercel
+// share one Supabase store with different keys, a save from the wrong side then writes
+// the original ciphertext back instead of overwriting every token with a blank.
+export function openStoredToken(value, key) {
   try {
-    return decryptSecret(value, tokenEncryptionKey());
+    return { token: decryptSecret(value, key), sealed: '' };
   } catch (error) {
     console.error(`Stored access token could not be decrypted: ${error.message}`);
-    return '';
+    return { token: '', sealed: String(value || '') };
   }
+}
+
+function readStoredToken(value) {
+  let key = null;
+  try {
+    key = tokenEncryptionKey();
+  } catch (error) {
+    console.error(error.message);
+  }
+  return openStoredToken(value, key);
+}
+
+// What gets written for one token: a live token is (re-)encrypted; a token this server
+// couldn't open is written back exactly as it was read.
+export function sealForStorage(token, sealed, key) {
+  return token ? encryptSecret(token, key) : (sealed || '');
 }
 
 function storeForPersistence() {
   const key = tokenEncryptionKey();
   return {
     ...configStore,
-    accounts: configStore.accounts.map((account) => ({
-      ...account,
-      accessToken: encryptSecret(account.accessToken, key),
-      ads: account.ads ? { ...account.ads, accessToken: encryptSecret(account.ads.accessToken, key) } : null
-    }))
+    accounts: configStore.accounts.map(({ sealedToken, ...account }) => {
+      let ads = null;
+      if (account.ads) {
+        const { sealedToken: adsSealed, ...rest } = account.ads;
+        ads = { ...rest, accessToken: sealForStorage(rest.accessToken, adsSealed, key) };
+      }
+      return { ...account, accessToken: sealForStorage(account.accessToken, sealedToken, key), ads };
+    })
   };
 }
 
@@ -563,10 +588,14 @@ async function saveConfigStore() {
   // quietly falling back to writing plaintext.
   const persisted = storeForPersistence();
   if (supabaseEnabled()) {
+    // Supabase is the source of truth when configured. If the write fails, say so - a
+    // local-file fallback would report "saved" and then vanish on the next re-read.
     try {
-      if (await kvSet('config', persisted)) return true;
-    } catch {
-      // fall through to the local file
+      await kvSet('config', persisted);
+      return true;
+    } catch (error) {
+      console.error(`Saving settings to Supabase failed: ${error.message}`);
+      return false;
     }
   }
   try {
@@ -587,17 +616,21 @@ function supabaseEnabled() {
   return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
-function supabaseHeaders() {
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  return { apikey: key, Authorization: `Bearer ${key}` };
+// Newer projects issue sb_secret_... keys. They aren't JWTs, so sending one as a Bearer
+// token makes PostgREST reject the request - they go on `apikey` only. Legacy service_role
+// JWTs (eyJ...) still need both headers.
+export function supabaseHeaders(key = process.env.SUPABASE_SERVICE_ROLE_KEY || '') {
+  return key.startsWith('sb_') ? { apikey: key } : { apikey: key, Authorization: `Bearer ${key}` };
 }
 
-// Read one value from the kv_store table; null if missing or Supabase isn't configured.
+// Read one value from the kv_store table; null if the row doesn't exist yet or Supabase
+// isn't configured. A failed request THROWS: treating an error as "empty" would let the
+// next save overwrite the real data with whatever this server happens to hold.
 async function kvGet(storeKey) {
   if (!supabaseEnabled()) return null;
   const url = `${process.env.SUPABASE_URL}/rest/v1/kv_store?key=eq.${encodeURIComponent(storeKey)}&select=value`;
   const response = await fetch(url, { headers: supabaseHeaders() });
-  if (!response.ok) return null;
+  if (!response.ok) throw new Error(`Supabase read of "${storeKey}" failed: ${response.status} ${(await response.text()).slice(0, 200)}`);
   const rows = await response.json();
   return Array.isArray(rows) && rows[0] ? rows[0].value : null;
 }
@@ -611,7 +644,8 @@ async function kvSet(storeKey, value) {
     headers: { ...supabaseHeaders(), 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' },
     body: JSON.stringify([{ key: storeKey, value, updated_at: new Date().toISOString() }])
   });
-  return response.ok;
+  if (!response.ok) throw new Error(`Supabase write of "${storeKey}" failed: ${response.status} ${(await response.text()).slice(0, 200)}`);
+  return true;
 }
 
 // Load admin-saved config from Supabase. Re-read on a short TTL (not once per process):
@@ -627,8 +661,12 @@ async function ensureConfigLoaded(force = false) {
     if (stored && typeof stored === 'object') {
       configStore = migrateStoredConfig(stored);
     }
-  } catch {
-    // Persisted config is best-effort; keep the current copy and retry after the TTL.
+  } catch (error) {
+    console.error(error.message);
+    // Reads: keep the current copy and retry after the TTL. Writes (force) must stop here -
+    // saving on top of a store we couldn't read would overwrite accounts and client
+    // logins that only exist in the database.
+    if (force) throw httpError(503, 'Could not read settings from Supabase, so nothing was saved. Try again in a moment.');
   }
 }
 
