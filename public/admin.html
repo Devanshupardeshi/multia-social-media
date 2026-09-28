@@ -6,15 +6,13 @@
     <meta name="robots" content="noindex, nofollow">
     <title>Admin · Multia</title>
     <link rel="icon" type="image/svg+xml" href="/logos/m-black.svg">
-    <link rel="stylesheet" href="/styles.css?v=24">
+    <link rel="stylesheet" href="/styles.css?v=27">
     <style>
       .admin-wrap { max-width: 760px; margin: 0 auto; padding: 28px 20px 64px; }
-      .admin-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+      .admin-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+      .admin-top-links { display: flex; align-items: center; gap: 14px; }
       .admin-top a { color: var(--muted); font-size: 0.85rem; text-decoration: none; }
       .admin-top a:hover { color: var(--primary-dark); }
-      .lock-card { max-width: 380px; margin: 12vh auto 0; }
-      .lock-card .panel-header { padding: 18px 18px 0; }
-      .lock-body { padding: 16px 18px 18px; display: grid; gap: 12px; }
       .admin-grid { display: grid; gap: 14px; }
       .status-row { display: flex; flex-wrap: wrap; gap: 10px 24px; padding: 14px 16px; }
       .status-row > div { display: grid; gap: 2px; }
@@ -30,121 +28,154 @@
       .account-row-name small { color: var(--muted); font-size: 0.75rem; overflow-wrap: anywhere; }
       .account-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
       .default-badge { padding: 2px 8px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-dark); font-size: 0.7rem; font-weight: 760; }
+      .off-badge { padding: 2px 8px; border-radius: 999px; background: var(--surface-raised); color: var(--muted); font-size: 0.7rem; font-weight: 760; }
       .accounts-empty { margin: 0; color: var(--muted); font-size: 0.88rem; }
+      .client-form { display: grid; gap: 12px; padding: 4px 16px 16px; }
+      .pw-row { display: flex; gap: 8px; }
+      .pw-row input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .client-accounts { margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-small); }
+      .client-accounts legend { padding: 0 4px; color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+      .client-accounts label { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.88rem; }
+      .credential-card { margin: 0 16px 16px; padding: 14px 16px; border: 1px solid var(--primary); border-radius: var(--radius-small); background: var(--primary-soft); }
+      .credential-card p { margin: 0 0 8px; font-size: 0.82rem; }
+      .credential-card pre { margin: 0 0 10px; padding: 10px 12px; border-radius: var(--radius-small); background: var(--bg); font-size: 0.82rem; white-space: pre-wrap; overflow-wrap: anywhere; }
       [hidden] { display: none !important; }
     </style>
   </head>
   <body>
     <div class="admin-wrap">
-      <!-- Password gate -->
-      <section class="panel lock-card" id="lock-view">
-        <div class="panel-header">
-          <div>
-            <p class="section-label">Restricted</p>
-            <h2>Admin access</h2>
-          </div>
+      <div class="admin-top">
+        <div>
+          <p class="section-label">Admin</p>
+          <h2 style="margin:2px 0 0">Graph API settings</h2>
         </div>
-        <form class="lock-body" id="lock-form" autocomplete="off">
-          <label class="field-stack">
-            <span>Password</span>
-            <input id="admin-password" type="password" spellcheck="false" placeholder="Enter admin password" autocomplete="current-password">
-          </label>
-          <button class="primary-button" id="unlock-btn" type="submit">Unlock</button>
-          <div class="config-feedback" id="lock-feedback" role="status" aria-live="polite"></div>
-        </form>
-      </section>
-
-      <!-- Settings (revealed after login) -->
-      <div id="admin-view" hidden>
-        <div class="admin-top">
-          <div>
-            <p class="section-label">Admin</p>
-            <h2 style="margin:2px 0 0">Graph API settings</h2>
-          </div>
+        <div class="admin-top-links">
           <a href="/">← Back to dashboard</a>
+          <button class="secondary-button small-button" id="logout-btn" type="button">Log out</button>
         </div>
+      </div>
 
-        <div class="admin-grid">
-          <section class="panel">
-            <div class="panel-header compact">
+      <div class="admin-grid">
+        <section class="panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="section-label">Status</p>
+              <h2>Current connection</h2>
+            </div>
+            <span class="config-state" id="config-state">Checking…</span>
+          </div>
+          <div class="status-row" id="status-row"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="section-label">Accounts</p>
+              <h2>Registered accounts</h2>
+            </div>
+          </div>
+          <div class="accounts-admin" id="accounts-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="section-label">Client access</p>
+              <h2>Client logins</h2>
+            </div>
+          </div>
+          <div class="accounts-admin" id="clients-list"></div>
+          <form class="client-form" id="client-form" autocomplete="off">
+            <label class="field-stack">
+              <span>Client name</span>
+              <input id="client-name" placeholder="e.g. Acme Interiors">
+            </label>
+            <label class="field-stack">
+              <span>Login ID</span>
+              <input id="client-login" autocapitalize="none" spellcheck="false" placeholder="e.g. acme">
+            </label>
+            <label class="field-stack">
+              <span id="client-password-label">Password</span>
+              <div class="pw-row">
+                <input id="client-password" spellcheck="false" autocomplete="new-password" placeholder="At least 10 characters">
+                <button class="secondary-button small-button" id="generate-password" type="button">Generate</button>
+              </div>
+            </label>
+            <fieldset class="client-accounts">
+              <legend>Accounts this client can see</legend>
+              <div id="client-accounts"></div>
+            </fieldset>
+            <div class="connect-actions">
+              <button class="primary-button" id="save-client" type="submit">Create client</button>
+              <button class="secondary-button" id="cancel-client" type="button" hidden>Cancel edit</button>
+            </div>
+            <div class="config-feedback" id="client-feedback" role="status" aria-live="polite"></div>
+          </form>
+          <div class="credential-card" id="credential-card" hidden>
+            <p><strong>Share these with the client now.</strong> The password is stored only as a hash and can't be shown again.</p>
+            <pre id="credential-text"></pre>
+            <button class="secondary-button small-button" id="copy-credentials" type="button">Copy login details</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="section-label">Connection</p>
+              <h2>Add / edit account</h2>
+            </div>
+          </div>
+          <div class="connect-body">
+            <form class="connect-form" id="config-form" autocomplete="off">
+              <label class="field-stack token-field">
+                <span>Access token</span>
+                <input id="token-input" name="accessToken" type="password" spellcheck="false" placeholder="Paste token to connect or replace">
+              </label>
+              <label class="field-stack">
+                <span>Instagram account ID</span>
+                <input id="ig-user-id-input" name="instagramUserId" inputmode="numeric" placeholder="1784…">
+              </label>
+              <label class="field-stack">
+                <span>Label (optional)</span>
+                <input id="label-input" name="label" placeholder="e.g. Brand main">
+              </label>
+              <label class="field-stack">
+                <span>Graph API version</span>
+                <input id="graph-version-input" name="graphApiVersion" placeholder="v23.0">
+              </label>
+              <label class="field-stack">
+                <span>Token source</span>
+                <select id="api-mode-input" name="apiMode">
+                  <option value="auto">Auto</option>
+                  <option value="instagram">Instagram Login</option>
+                  <option value="facebook">Facebook Login</option>
+                </select>
+              </label>
+              <div class="connect-actions">
+                <button class="primary-button" id="save-config" type="submit">Save and test</button>
+                <button class="secondary-button" id="discover-account" type="button">Find account</button>
+              </div>
+            </form>
+
+            <div class="token-guide" aria-label="Token requirements">
               <div>
-                <p class="section-label">Status</p>
-                <h2>Current connection</h2>
+                <p class="guide-title">Token type</p>
+                <p>From the Instagram setup screen, use Instagram Login. For Business Manager / System User tokens, use Facebook Login.</p>
               </div>
-              <span class="config-state" id="config-state">Checking…</span>
-            </div>
-            <div class="status-row" id="status-row"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header compact">
               <div>
-                <p class="section-label">Accounts</p>
-                <h2>Registered accounts</h2>
+                <p class="guide-title">Needed permissions</p>
+                <p>Minimum: instagram_basic, instagram_manage_insights, read_insights. The account ID is the number shown under your Instagram username.</p>
               </div>
             </div>
-            <div class="accounts-admin" id="accounts-list"></div>
-          </section>
 
-          <section class="panel">
-            <div class="panel-header compact">
-              <div>
-                <p class="section-label">Connection</p>
-                <h2>Add / edit account</h2>
-              </div>
-            </div>
-            <div class="connect-body">
-              <form class="connect-form" id="config-form" autocomplete="off">
-                <label class="field-stack token-field">
-                  <span>Access token</span>
-                  <input id="token-input" name="accessToken" type="password" spellcheck="false" placeholder="Paste token to connect or replace">
-                </label>
-                <label class="field-stack">
-                  <span>Instagram account ID</span>
-                  <input id="ig-user-id-input" name="instagramUserId" inputmode="numeric" placeholder="1784…">
-                </label>
-                <label class="field-stack">
-                  <span>Label (optional)</span>
-                  <input id="label-input" name="label" placeholder="e.g. Brand main">
-                </label>
-                <label class="field-stack">
-                  <span>Graph API version</span>
-                  <input id="graph-version-input" name="graphApiVersion" placeholder="v23.0">
-                </label>
-                <label class="field-stack">
-                  <span>Token source</span>
-                  <select id="api-mode-input" name="apiMode">
-                    <option value="auto">Auto</option>
-                    <option value="instagram">Instagram Login</option>
-                    <option value="facebook">Facebook Login</option>
-                  </select>
-                </label>
-                <div class="connect-actions">
-                  <button class="primary-button" id="save-config" type="submit">Save and test</button>
-                  <button class="secondary-button" id="discover-account" type="button">Find account</button>
-                </div>
-              </form>
-
-              <div class="token-guide" aria-label="Token requirements">
-                <div>
-                  <p class="guide-title">Token type</p>
-                  <p>From the Instagram setup screen, use Instagram Login. For Business Manager / System User tokens, use Facebook Login.</p>
-                </div>
-                <div>
-                  <p class="guide-title">Needed permissions</p>
-                  <p>Minimum: instagram_basic, instagram_manage_insights, read_insights. The account ID is the number shown under your Instagram username.</p>
-                </div>
-              </div>
-
-              <div class="config-feedback" id="config-feedback" role="status" aria-live="polite"></div>
-              <div class="discovered-accounts" id="discovered-accounts"></div>
-              <p class="panel-footnote" id="persist-note" hidden></p>
-            </div>
-          </section>
-        </div>
+            <div class="config-feedback" id="config-feedback" role="status" aria-live="polite"></div>
+            <div class="discovered-accounts" id="discovered-accounts"></div>
+            <p class="panel-footnote" id="persist-note" hidden></p>
+          </div>
+        </section>
       </div>
     </div>
 
-    <script src="/admin.js?v=4" type="module"></script>
+    <script src="/admin.js?v=5" type="module"></script>
   </body>
 </html>

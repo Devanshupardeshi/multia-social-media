@@ -31,7 +31,8 @@ const state = {
   accountWindow: null,
   accountRange: null,
   accountCompareRange: null,
-  usernameHidden: false
+  usernameHidden: false,
+  role: ''
 };
 
 const els = {
@@ -107,7 +108,10 @@ const els = {
   contentDetail: document.querySelector('#content-detail'),
   reportBox: document.querySelector('#report-box'),
   copyReport: document.querySelector('#copy-report'),
-  exportPdf: document.querySelector('#export-pdf')
+  exportPdf: document.querySelector('#export-pdf'),
+  logoutButton: document.querySelector('#logout-button'),
+  adminNavItem: document.querySelector('.nav-item[href="/admin"]'),
+  accountsNavItem: document.querySelector('.nav-item[href="/"]')
 };
 
 // Eye-toggle icons (defined before init() runs so applyUsernameMask can use them).
@@ -634,6 +638,13 @@ async function init() {
   applyUsernameMask();
   bindEvents();
 
+  try {
+    const me = await fetchJson('/api/auth/me');
+    state.role = me.role;
+  } catch {
+    return; // fetchJson is already redirecting to sign-in
+  }
+
   state.accountId = new URLSearchParams(location.search).get('account') || '';
   try {
     const info = await fetchJson('/api/accounts');
@@ -643,7 +654,17 @@ async function init() {
     state.accounts = [];
   }
   if (state.accountId && !state.accounts.some((account) => account.id === state.accountId)) {
-    state.accountId = ''; // URL names an account that no longer exists
+    state.accountId = ''; // URL names an account that no longer exists (or isn't this login's)
+  }
+  applyRoleUi();
+
+  // A client with a single account has nothing to choose between - open it directly.
+  if (state.role === 'client' && !state.accountId && state.accounts.length === 1) {
+    state.accountId = state.accounts[0].id;
+  }
+  if (state.role === 'client' && !state.accounts.length) {
+    showNoAccessNotice();
+    return;
   }
 
   // With registered accounts, `/` is the all-accounts overview and `/?account=<id>`
@@ -792,9 +813,33 @@ function applyPage() {
   window.scrollTo(0, 0);
 }
 
+// The server already refuses everything a client may not see; this only tidies the UI so
+// they are never offered a link that would bounce them.
+function applyRoleUi() {
+  const isClient = state.role === 'client';
+  els.adminNavItem?.classList.toggle('hidden', isClient);
+  els.accountsNavItem?.classList.toggle('hidden', isClient && state.accounts.length < 2);
+}
+
+function showNoAccessNotice() {
+  document.querySelector('.main').innerHTML = `
+    <section class="panel" style="margin:12vh auto 0;max-width:460px">
+      <div class="panel-header"><div>
+        <p class="section-label">Almost there</p>
+        <h2>No account connected yet</h2>
+      </div></div>
+      <p class="panel-footnote" style="padding:0 18px 18px">Your login works, but no Instagram account has been assigned to it yet. Ask your Multia account manager to connect it.</p>
+    </section>`;
+}
+
+async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+  location.replace('/login');
+}
+
 function populateAccountSwitcher() {
   if (!state.accounts.length) return;
-  els.allAccountsLink?.classList.remove('hidden');
+  if (state.role === 'admin' || state.accounts.length > 1) els.allAccountsLink?.classList.remove('hidden');
   if (state.accounts.length < 2 || !els.accountSelect) return;
 
   els.accountSelect.innerHTML = state.accounts.map((account) => {
@@ -879,7 +924,9 @@ function bindEvents() {
   els.refreshSelect.addEventListener('change', () => {
     state.refreshMs = Number(els.refreshSelect.value);
     connectLiveStream();
-    // Persist the chosen interval so it survives reloads.
+    // Persist the chosen interval so it survives reloads. It applies to every viewer,
+    // so only the admin saves it; a client's choice lasts for their visit.
+    if (state.role !== 'admin') return;
     fetch('/api/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -888,6 +935,7 @@ function bindEvents() {
   });
 
   els.manualRefresh.addEventListener('click', () => refreshNow());
+  els.logoutButton?.addEventListener('click', logout);
 
   // Switching accounts is a plain navigation: the URL is the source of truth and
   // every piece of per-account view state resets cleanly.
@@ -4202,6 +4250,10 @@ function updateLiveBadge(status, label) {
 
 async function fetchJson(url) {
   const response = await fetch(url);
+  if (response.status === 401) {
+    location.replace(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
+    throw new Error('Signed out');
+  }
   const payload = await response.json();
   if (!response.ok || payload.error) {
     throw new Error(payload.detail || payload.error || `Request failed with ${response.status}`);

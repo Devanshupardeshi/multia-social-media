@@ -1,8 +1,19 @@
 import { createServer } from 'node:http';
+import {
+  createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual
+} from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const scrypt = promisify(scryptCallback);
+
+// Declared here, not beside the encryption helpers: loadConfigStore() runs at module load
+// and decrypts tokens, so anything it touches must already be initialised. Declaring it
+// further down puts it in the temporal dead zone and every token loads as blank.
+const ENCRYPTED_PREFIX = 'enc:v1:';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, 'public');
@@ -30,7 +41,8 @@ function loadConfigStore() {
   const seed = {
     refreshMs: clamp(toNumber(process.env.DASHBOARD_REFRESH_MS, 60000), 15000, 86400000),
     defaultAccountId: '',
-    accounts: []
+    accounts: [],
+    users: []
   };
   if (process.env.INSTAGRAM_ACCESS_TOKEN && process.env.INSTAGRAM_USER_ID) {
     const instagramUserId = sanitizeInstagramUserId(process.env.INSTAGRAM_USER_ID);
@@ -47,12 +59,14 @@ function loadConfigStore() {
 
 // Accept both the new { accounts: [...] } shape and the legacy single-account shape.
 function migrateStoredConfig(stored) {
+  const users = normalizeStoredUsers(stored.users);
   if (Array.isArray(stored.accounts)) {
     const accounts = stored.accounts.map(normalizeStoredAccount).filter((account) => account.instagramUserId);
     return {
       refreshMs: clamp(toNumber(stored.refreshMs, 60000), 15000, 86400000),
       defaultAccountId: sanitizeInstagramUserId(stored.defaultAccountId) || accounts[0]?.instagramUserId || '',
-      accounts
+      accounts,
+      users
     };
   }
   const account = normalizeStoredAccount(stored);
@@ -60,14 +74,31 @@ function migrateStoredConfig(stored) {
   return {
     refreshMs: clamp(toNumber(stored.refreshMs, 60000), 15000, 86400000),
     defaultAccountId: accounts[0]?.instagramUserId || '',
-    accounts
+    accounts,
+    users
   };
+}
+
+// Client logins. Only the scrypt hash is kept; the password itself is shown to the admin
+// once at creation/reset and never stored.
+function normalizeStoredUsers(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((user = {}) => ({
+    id: String(user.id || ''),
+    login: normalizeLogin(user.login),
+    name: String(user.name || '').trim(),
+    passwordHash: String(user.passwordHash || ''),
+    accountIds: [...new Set((Array.isArray(user.accountIds) ? user.accountIds : []).map(sanitizeInstagramUserId).filter(Boolean))],
+    sessionVersion: String(user.sessionVersion || newSessionVersion()),
+    disabled: Boolean(user.disabled),
+    createdAt: String(user.createdAt || '')
+  })).filter((user) => user.id && user.login && user.passwordHash);
 }
 
 function normalizeStoredAccount(raw = {}) {
   return {
     instagramUserId: sanitizeInstagramUserId(raw.instagramUserId),
-    accessToken: normalizeAccessToken(raw.accessToken),
+    accessToken: normalizeAccessToken(readStoredToken(raw.accessToken)),
     username: String(raw.username || ''),
     label: String(raw.label || ''),
     profilePictureUrl: String(raw.profilePictureUrl || ''),
@@ -106,20 +137,419 @@ function defaultConfig() {
   return accountConfig(getAccount());
 }
 
-function accountFromUrl(requestUrl) {
-  return accountConfig(getAccount(requestUrl.searchParams.get('account') || ''));
+// ---------------------------------------------------------------------------
+// Authentication
+//
+// Two roles. The admin is defined by env (ADMIN_LOGIN / ADMIN_PASSWORD) and sees every
+// account. Clients are created in /admin, live in configStore.users, and see only the
+// accounts in their accountIds. Sessions are a signed cookie rather than a session table,
+// so they work across stateless serverless instances.
+// ---------------------------------------------------------------------------
+
+const SESSION_COOKIE = 'mid_session';
+const CLIENT_SESSION_MS = 14 * 24 * 60 * 60 * 1000;
+const ADMIN_SESSION_MS = 12 * 60 * 60 * 1000;
+const LOGIN_PATTERN = /^[a-z0-9._@-]{3,64}$/;
+const MIN_PASSWORD_LENGTH = 10;
+
+function normalizeLogin(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function newSessionVersion() {
+  return randomBytes(9).toString('base64url');
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.expected = true;
+  return error;
+}
+
+let devSessionSecret = '';
+function sessionSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  // Every serverless instance would mint its own secret and reject the others' cookies.
+  if (process.env.VERCEL) return '';
+  if (!devSessionSecret) {
+    devSessionSecret = randomBytes(32).toString('hex');
+    console.warn('SESSION_SECRET is not set - using a random per-process secret; logins reset on restart.');
+  }
+  return devSessionSecret;
+}
+
+function adminLogin() {
+  return normalizeLogin(process.env.ADMIN_LOGIN || 'admin');
+}
+
+// Fail closed: with no ADMIN_PASSWORD there is no admin login at all.
+function adminEnabled() {
+  return Boolean(process.env.ADMIN_PASSWORD);
+}
+
+// Changing ADMIN_PASSWORD (or SESSION_SECRET) invalidates every existing admin session.
+function adminSessionVersion(secret) {
+  return createHmac('sha256', secret).update(`admin:${process.env.ADMIN_PASSWORD || ''}`).digest('base64url').slice(0, 16);
+}
+
+export async function hashPassword(password) {
+  const salt = randomBytes(16);
+  const hash = await scrypt(String(password), salt, 64);
+  return `scrypt$${salt.toString('base64')}$${hash.toString('base64')}`;
+}
+
+export async function verifyPassword(password, stored) {
+  const [scheme, saltB64, hashB64] = String(stored || '').split('$');
+  if (scheme !== 'scrypt' || !saltB64 || !hashB64) return false;
+  const expected = Buffer.from(hashB64, 'base64');
+  const actual = await scrypt(String(password), Buffer.from(saltB64, 'base64'), expected.length);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+// Constant-time comparison for strings of any length (hashing first equalises lengths).
+function safeEqualString(a, b) {
+  const digest = (value) => createHash('sha256').update(String(value)).digest();
+  return timingSafeEqual(digest(a), digest(b));
+}
+
+export function signSessionToken(payload, secret) {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = createHmac('sha256', secret).update(body).digest('base64url');
+  return `${body}.${signature}`;
+}
+
+// The payload, only if the signature matches and it has not expired.
+export function readSessionToken(token, secret, now = Date.now()) {
+  if (!secret || typeof token !== 'string') return null;
+  const [body, signature] = token.split('.');
+  if (!body || !signature) return null;
+  const expected = createHmac('sha256', secret).update(body).digest();
+  const given = Buffer.from(signature, 'base64url');
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    return payload && typeof payload.exp === 'number' && payload.exp > now ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+// Same-origin paths only: "/x" yes; "//evil.com", "/\evil.com", "https://…" no.
+export function safeNextPath(next) {
+  const value = String(next || '');
+  return /^\/(?![/\\])/.test(value) && !/[\r\n]/.test(value) ? value : '';
+}
+
+// Which account id a session may read. Admins keep the old behaviour (any id; getAccount
+// falls back to the default). Clients get only their own accounts - an id outside that
+// list is a 403, never a silent fallback to another client's data.
+export function resolveAllowedAccountId(session, requestedId, existingIds) {
+  const wanted = sanitizeInstagramUserId(requestedId);
+  if (session?.role === 'admin') return wanted;
+  const allowed = (session?.user?.accountIds || []).filter((id) => existingIds.includes(id));
+  if (!allowed.length) throw httpError(403, 'No Instagram account has been assigned to this login yet.');
+  if (!wanted) return allowed[0];
+  if (!allowed.includes(wanted)) throw httpError(403, 'You do not have access to this account.');
+  return wanted;
+}
+
+function readCookie(req, name) {
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const index = part.indexOf('=');
+    if (index > -1 && part.slice(0, index).trim() === name) return part.slice(index + 1).trim();
+  }
+  return '';
+}
+
+function sessionCookie(req, value, maxAgeMs) {
+  const secure = process.env.VERCEL || req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+  return `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(maxAgeMs / 1000)}${secure}`;
+}
+
+// Resolved against the *current* store on every request, so disabling a client, resetting
+// their password or unassigning an account takes effect on their very next request.
+function sessionFromRequest(req) {
+  const secret = sessionSecret();
+  const payload = readSessionToken(readCookie(req, SESSION_COOKIE), secret);
+  if (!payload) return null;
+  if (payload.role === 'admin') {
+    return adminEnabled() && payload.sub === 'admin' && payload.ver === adminSessionVersion(secret)
+      ? { role: 'admin', user: { id: 'admin', login: adminLogin(), name: 'Admin' } }
+      : null;
+  }
+  const user = configStore.users.find((entry) => entry.id === payload.sub);
+  if (!user || user.disabled || user.sessionVersion !== payload.ver) return null;
+  return { role: 'client', user };
+}
+
+function accountFromRequest(requestUrl, session) {
+  const id = resolveAllowedAccountId(
+    session,
+    requestUrl.searchParams.get('account') || '',
+    configStore.accounts.map((account) => account.instagramUserId)
+  );
+  return accountConfig(getAccount(id));
+}
+
+function allowedAccounts(session) {
+  if (session.role === 'admin') return configStore.accounts;
+  const ids = new Set(session.user.accountIds);
+  return configStore.accounts.filter((account) => ids.has(account.instagramUserId));
+}
+
+// A browser cross-site form/fetch carries the attacker's Origin; ours carries our host.
+function isCrossOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try {
+    return new URL(origin).host !== req.headers.host;
+  } catch {
+    return true;
+  }
+}
+
+// ponytail: in-memory, so on Vercel each instance counts separately. Generated client
+// passwords make brute force impractical anyway; move this to a Supabase counter if a
+// shared limit is ever needed.
+const loginFailures = new Map(); // login -> [failure timestamps]
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 10;
+
+function tooManyFailures(login) {
+  const cutoff = Date.now() - LOGIN_WINDOW_MS;
+  const recent = (loginFailures.get(login) || []).filter((time) => time > cutoff);
+  loginFailures.set(login, recent);
+  return recent.length >= LOGIN_MAX_FAILURES;
+}
+
+// Checked against when the login ID doesn't exist, so response time doesn't reveal
+// which login IDs are real.
+let dummyPasswordHash = '';
+
+async function handleAuthLogin(req, res) {
+  if (req.method !== 'POST') return sendJson(res, { error: 'Method not allowed' }, 405);
+  const secret = sessionSecret();
+  if (!secret) return sendJson(res, { error: 'SESSION_SECRET is not configured on the server.' }, 500);
+
+  const body = await readJsonBody(req);
+  const login = normalizeLogin(body.login);
+  const password = String(body.password || '');
+  if (!login || !password) return sendJson(res, { error: 'Enter your login ID and password.' }, 400);
+  if (tooManyFailures(login)) return sendJson(res, { error: 'Too many attempts. Try again in 15 minutes.' }, 429);
+
+  let claims = null;
+  let ttl = 0;
+  if (login === adminLogin()) {
+    if (adminEnabled() && safeEqualString(password, process.env.ADMIN_PASSWORD)) {
+      claims = { sub: 'admin', role: 'admin', ver: adminSessionVersion(secret) };
+      ttl = ADMIN_SESSION_MS;
+    }
+  } else {
+    await ensureConfigLoaded(true);
+    const user = configStore.users.find((entry) => entry.login === login && !entry.disabled);
+    dummyPasswordHash ||= await hashPassword(randomBytes(16).toString('hex'));
+    const ok = await verifyPassword(password, user?.passwordHash || dummyPasswordHash);
+    if (user && ok) {
+      claims = { sub: user.id, role: 'client', ver: user.sessionVersion };
+      ttl = CLIENT_SESSION_MS;
+    }
+  }
+
+  if (!claims) {
+    // Spraying random login IDs must not grow this map without bound.
+    if (loginFailures.size > 10000) loginFailures.clear();
+    const failures = loginFailures.get(login) || [];
+    failures.push(Date.now());
+    loginFailures.set(login, failures);
+    return sendJson(res, { error: 'Incorrect login ID or password.' }, 401);
+  }
+
+  loginFailures.delete(login);
+  res.setHeader('Set-Cookie', sessionCookie(req, signSessionToken({ ...claims, exp: Date.now() + ttl }, secret), ttl));
+  const next = safeNextPath(body.next);
+  const home = claims.role === 'admin' ? '/admin' : '/';
+  const redirect = next && !(claims.role === 'client' && next.startsWith('/admin')) ? next : home;
+  return sendJson(res, { ok: true, role: claims.role, redirect });
+}
+
+function handleAuthLogout(req, res) {
+  // POST only, so another site can't sign people out with an <img src>.
+  if (req.method !== 'POST') return sendJson(res, { error: 'Method not allowed' }, 405);
+  res.setHeader('Set-Cookie', sessionCookie(req, '', 0));
+  return sendJson(res, { ok: true });
+}
+
+function handleAuthMe(res, session) {
+  return sendJson(res, {
+    role: session.role,
+    login: session.user.login,
+    name: session.user.name || session.user.login,
+    accountIds: allowedAccounts(session).map((account) => account.instagramUserId)
+  });
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    login: user.login,
+    name: user.name,
+    accountIds: user.accountIds,
+    disabled: user.disabled,
+    createdAt: user.createdAt
+  };
+}
+
+// GET lists client logins (never hashes), POST creates one, PATCH ?id= updates, DELETE
+// ?id= removes. Admin-only - the gate in handleRequest enforces that before we get here.
+async function handleClients(req, res, requestUrl) {
+  if (req.method === 'GET') {
+    return sendJson(res, { clients: configStore.users.map(publicUser) });
+  }
+
+  // Fresh read first: this writes the whole store, and a stale copy from another
+  // serverless instance would silently clobber accounts or clients saved elsewhere.
+  await ensureConfigLoaded(true);
+  const knownAccountIds = new Set(configStore.accounts.map((account) => account.instagramUserId));
+  const cleanAccountIds = (ids) => [...new Set((Array.isArray(ids) ? ids : [])
+    .map(sanitizeInstagramUserId)
+    .filter((id) => knownAccountIds.has(id)))];
+
+  if (req.method === 'DELETE') {
+    const id = String(requestUrl.searchParams.get('id') || '');
+    const remaining = configStore.users.filter((user) => user.id !== id);
+    if (remaining.length === configStore.users.length) return sendJson(res, { error: 'Client not found' }, 404);
+    configStore.users = remaining;
+    const persisted = await saveConfigStore();
+    return sendJson(res, { ok: true, clients: configStore.users.map(publicUser), persisted });
+  }
+
+  const body = await readJsonBody(req);
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (password && password.length < MIN_PASSWORD_LENGTH) {
+    return sendJson(res, { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` }, 400);
+  }
+
+  if (req.method === 'POST') {
+    const login = normalizeLogin(body.login);
+    if (!LOGIN_PATTERN.test(login)) {
+      return sendJson(res, { error: 'Login ID must be 3-64 characters: letters, numbers, dot, dash, underscore or @.' }, 400);
+    }
+    if (login === adminLogin() || configStore.users.some((user) => user.login === login)) {
+      return sendJson(res, { error: 'That login ID is already taken.' }, 409);
+    }
+    if (!password) return sendJson(res, { error: 'A password is required.' }, 400);
+
+    const user = {
+      id: randomBytes(12).toString('base64url'),
+      login,
+      name: String(body.name || '').trim() || login,
+      passwordHash: await hashPassword(password),
+      accountIds: cleanAccountIds(body.accountIds),
+      sessionVersion: newSessionVersion(),
+      disabled: false,
+      createdAt: new Date().toISOString()
+    };
+    configStore.users = [...configStore.users, user];
+    const persisted = await saveConfigStore();
+    return sendJson(res, { ok: true, client: publicUser(user), persisted }, 201);
+  }
+
+  if (req.method === 'PATCH') {
+    const id = String(requestUrl.searchParams.get('id') || '');
+    const existing = configStore.users.find((user) => user.id === id);
+    if (!existing) return sendJson(res, { error: 'Client not found' }, 404);
+
+    const next = { ...existing };
+    if (typeof body.name === 'string') next.name = body.name.trim() || existing.login;
+    if (Array.isArray(body.accountIds)) next.accountIds = cleanAccountIds(body.accountIds);
+    if (typeof body.disabled === 'boolean') next.disabled = body.disabled;
+    // A new password or a disable signs the client out everywhere. Account changes need no
+    // bump: sessions read accountIds fresh on every request.
+    if (password) {
+      next.passwordHash = await hashPassword(password);
+      next.sessionVersion = newSessionVersion();
+    }
+    if (next.disabled && !existing.disabled) next.sessionVersion = newSessionVersion();
+
+    configStore.users = configStore.users.map((user) => (user.id === id ? next : user));
+    const persisted = await saveConfigStore();
+    return sendJson(res, { ok: true, client: publicUser(next), persisted });
+  }
+
+  return sendJson(res, { error: 'Method not allowed' }, 405);
+}
+
+// ---------------------------------------------------------------------------
+// Access tokens at rest
+//
+// We hold client credentials, so tokens are AES-256-GCM encrypted in Supabase / config.json
+// when TOKEN_ENCRYPTION_KEY is set. Plaintext values still load, so an existing store
+// migrates on its next save. Losing the key means re-entering every token.
+// ---------------------------------------------------------------------------
+
+function tokenEncryptionKey() {
+  const raw = process.env.TOKEN_ENCRYPTION_KEY || '';
+  if (!raw) return null;
+  const key = Buffer.from(raw, 'base64');
+  if (key.length !== 32) throw new Error('TOKEN_ENCRYPTION_KEY must be 32 random bytes, base64 encoded.');
+  return key;
+}
+
+export function encryptSecret(value, key) {
+  const text = String(value || '');
+  if (!key || !text || text.startsWith(ENCRYPTED_PREFIX)) return text;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const data = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  return `${ENCRYPTED_PREFIX}${iv.toString('base64url')}:${cipher.getAuthTag().toString('base64url')}:${data.toString('base64url')}`;
+}
+
+export function decryptSecret(value, key) {
+  const text = String(value || '');
+  if (!text.startsWith(ENCRYPTED_PREFIX)) return text; // legacy plaintext
+  if (!key) throw new Error('TOKEN_ENCRYPTION_KEY is required to read stored tokens.');
+  const [ivB64, tagB64, dataB64] = text.slice(ENCRYPTED_PREFIX.length).split(':');
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(dataB64, 'base64url')), decipher.final()]).toString('utf8');
+}
+
+// A token that can't be decrypted (missing or wrong key) loads as blank rather than taking
+// the whole store down; the account then shows up in /admin needing its token re-entered.
+function readStoredToken(value) {
+  try {
+    return decryptSecret(value, tokenEncryptionKey());
+  } catch (error) {
+    console.error(`Stored access token could not be decrypted: ${error.message}`);
+    return '';
+  }
+}
+
+function storeForPersistence() {
+  const key = tokenEncryptionKey();
+  return {
+    ...configStore,
+    accounts: configStore.accounts.map((account) => ({
+      ...account,
+      accessToken: encryptSecret(account.accessToken, key)
+    }))
+  };
 }
 
 async function saveConfigStore() {
+  // Built outside the try blocks so a bad TOKEN_ENCRYPTION_KEY fails loudly instead of
+  // quietly falling back to writing plaintext.
+  const persisted = storeForPersistence();
   if (supabaseEnabled()) {
     try {
-      if (await kvSet('config', configStore)) return true;
+      if (await kvSet('config', persisted)) return true;
     } catch {
       // fall through to the local file
     }
   }
   try {
-    writeFileSync(configPath, JSON.stringify(configStore, null, 2));
+    writeFileSync(configPath, JSON.stringify(persisted, null, 2));
     return true;
   } catch {
     return false; // read-only FS without Supabase: config applies in-memory only
@@ -210,15 +640,20 @@ export async function handleRequest(req, res) {
   try {
     const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
-    // Make sure any admin-saved config (incl. the saved refresh interval) is loaded
-    // before any route reads the account config store.
+    // Make sure any admin-saved config (incl. the saved refresh interval and client logins)
+    // is loaded before any route reads the store.
     await ensureConfigLoaded();
+    const { pathname } = requestUrl;
 
-    if (requestUrl.pathname === '/api/admin/login') {
-      return await handleAdminLogin(req, res);
+    if (req.method !== 'GET' && req.method !== 'HEAD' && isCrossOrigin(req)) {
+      return sendJson(res, { error: 'Cross-origin request blocked.' }, 403);
     }
 
-    if (requestUrl.pathname === '/api/health') {
+    // --- Public routes ---------------------------------------------------------
+    if (pathname === '/api/auth/login') return await handleAuthLogin(req, res);
+    if (pathname === '/api/auth/logout') return handleAuthLogout(req, res);
+
+    if (pathname === '/api/health') {
       const config = defaultConfig();
       return sendJson(res, {
         ok: true,
@@ -227,16 +662,42 @@ export async function handleRequest(req, res) {
       });
     }
 
-    if (requestUrl.pathname === '/api/status') {
-      return sendJson(res, getStatusPayload(accountFromUrl(requestUrl)));
+    if (pathname === '/login' || pathname === '/login.html') {
+      return await serveStatic(new URL('/login.html', requestUrl), res);
     }
 
-    if (requestUrl.pathname === '/api/accounts') {
-      return sendJson(res, getAccountsPayload());
+    // --- Everything below needs a session --------------------------------------
+    const session = sessionFromRequest(req);
+    const adminPage = ['/admin', '/admin/', '/admin.html'].includes(pathname);
+
+    if (adminPage || ['/', '/index.html'].includes(pathname)) {
+      if (!session) return redirect(res, `/login?next=${encodeURIComponent(pathname + requestUrl.search)}`);
+      if (adminPage && session.role !== 'admin') return redirect(res, '/');
+      return await serveStatic(requestUrl, res);
     }
 
-    if (requestUrl.pathname === '/api/accounts/summary') {
-      return await handleAccountsSummary(res);
+    if (pathname.startsWith('/api/')) {
+      if (!session) return sendJson(res, { error: 'Please log in.' }, 401);
+      const adminOnly = pathname.startsWith('/api/config') || pathname.startsWith('/api/admin/') || pathname === '/api/refresh';
+      if (adminOnly && session.role !== 'admin') return sendJson(res, { error: 'Admin access required.' }, 403);
+    }
+
+    if (pathname === '/api/auth/me') return handleAuthMe(res, session);
+
+    if (pathname === '/api/admin/clients') {
+      return await handleClients(req, res, requestUrl);
+    }
+
+    if (pathname === '/api/status') {
+      return sendJson(res, getStatusPayload(accountFromRequest(requestUrl, session), session));
+    }
+
+    if (pathname === '/api/accounts') {
+      return sendJson(res, getAccountsPayload(session));
+    }
+
+    if (pathname === '/api/accounts/summary') {
+      return await handleAccountsSummary(res, session);
     }
 
     if (requestUrl.pathname === '/api/config') {
@@ -262,22 +723,27 @@ export async function handleRequest(req, res) {
         limit,
         allMedia,
         force: requestUrl.searchParams.get('force') === '1',
-        activeConfig: accountFromUrl(requestUrl)
+        activeConfig: accountFromRequest(requestUrl, session)
       });
       return sendJson(res, data);
     }
 
     if (requestUrl.pathname === '/api/insights/range') {
-      return await handleRangeInsights(res, requestUrl);
+      return await handleRangeInsights(res, requestUrl, session);
     }
 
     if (requestUrl.pathname === '/api/live') {
-      return await handleLiveStream(req, res, requestUrl);
+      return await handleLiveStream(req, res, requestUrl, session);
     }
+
+    // Unknown API paths must not fall through to the static handler.
+    if (pathname.startsWith('/api/')) return sendJson(res, { error: 'Not found' }, 404);
 
     return await serveStatic(requestUrl, res);
   } catch (error) {
-    console.error(error);
+    // Access denials raised by httpError are expected outcomes - log everything else,
+    // including Graph API 4xx failures such as expired tokens.
+    if (!error.expected) console.error(error);
     if (!res.headersSent) {
       sendJson(res, {
         error: error.statusCode ? error.message : 'Dashboard server error',
@@ -295,6 +761,8 @@ if (!process.env.VERCEL) {
   createServer(handleRequest).listen(PORT, '0.0.0.0', () => {
     console.log(`Instagram dashboard running at http://localhost:${PORT}`);
     console.log(`Data mode: ${hasCredentials() ? 'Instagram Graph API' : 'demo data'}`);
+    if (!adminEnabled()) console.warn('ADMIN_PASSWORD is not set - admin login is disabled.');
+    if (!process.env.TOKEN_ENCRYPTION_KEY) console.warn('TOKEN_ENCRYPTION_KEY is not set - access tokens are stored unencrypted.');
   });
 }
 
@@ -318,8 +786,9 @@ function loadEnv(envPath) {
   }
 }
 
-function getStatusPayload(config = defaultConfig()) {
-  return {
+function getStatusPayload(config = defaultConfig(), session = null) {
+  const payload = {
+    role: session?.role || '',
     mode: hasCredentials(config) ? 'graph-api' : 'demo',
     graphApiVersion: config.graphApiVersion,
     apiMode: config.apiMode,
@@ -328,40 +797,29 @@ function getStatusPayload(config = defaultConfig()) {
     hasInstagramUserId: Boolean(config.instagramUserId),
     instagramUserId: config.instagramUserId,
     username: config.username || '',
-    accountsCount: configStore.accounts.length,
-    defaultAccountId: configStore.defaultAccountId,
     refreshMs: configStore.refreshMs,
-    supabase: supabaseEnabled(),
-    serverless: Boolean(process.env.VERCEL),
     serverTime: new Date().toISOString()
   };
-}
-
-// The admin password gates settings changes (save/discover) so the dashboard can be
-// deployed publicly while only the /admin page can change the connection. Override the
-// default by setting ADMIN_PASSWORD in the host's environment variables.
-function adminPassword() {
-  return process.env.ADMIN_PASSWORD || 'Devanshu@0609';
-}
-
-function isAuthed(req, body) {
-  const provided = req.headers['x-admin-password'] || (body && body.adminPassword) || '';
-  return typeof provided === 'string' && provided.length > 0 && provided === adminPassword();
-}
-
-async function handleAdminLogin(req, res) {
-  if (req.method !== 'POST') {
-    return sendJson(res, { error: 'Method not allowed' }, 405);
+  // Agency-wide facts (how many clients, storage setup) are the admin's business only.
+  if (session?.role === 'admin') {
+    Object.assign(payload, {
+      accountsCount: configStore.accounts.length,
+      defaultAccountId: configStore.defaultAccountId,
+      supabase: supabaseEnabled(),
+      serverless: Boolean(process.env.VERCEL),
+      tokenEncryption: Boolean(process.env.TOKEN_ENCRYPTION_KEY)
+    });
   }
-  const body = await readJsonBody(req);
-  if (typeof body.password === 'string' && body.password === adminPassword()) {
-    return sendJson(res, { ok: true });
-  }
-  return sendJson(res, { error: 'Incorrect password' }, 401);
+  return payload;
 }
 
-// Save just the auto-refresh interval (non-sensitive, no admin password needed) so the
-// user's chosen cadence persists across reloads. Stored in Supabase if configured, else .env.
+function redirect(res, location) {
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' });
+  res.end();
+}
+
+// Save the auto-refresh interval so the chosen cadence persists across reloads. It is a
+// setting for every viewer, so it is admin-only. Stored in Supabase if configured, else config.json.
 async function handleRefreshInterval(req, res) {
   if (req.method !== 'POST') {
     return sendJson(res, { error: 'Method not allowed' }, 405);
@@ -384,9 +842,6 @@ async function handleConfig(req, res, requestUrl) {
   }
 
   if (req.method === 'DELETE') {
-    if (!isAuthed(req)) {
-      return sendJson(res, { error: 'Admin password required' }, 401);
-    }
     await ensureConfigLoaded(true);
     const id = sanitizeInstagramUserId(requestUrl.searchParams.get('id'));
     const remaining = configStore.accounts.filter((account) => account.instagramUserId !== id);
@@ -397,6 +852,11 @@ async function handleConfig(req, res, requestUrl) {
     if (configStore.defaultAccountId === id) {
       configStore.defaultAccountId = remaining[0]?.instagramUserId || '';
     }
+    // No client login may keep pointing at an account that no longer exists.
+    configStore.users = configStore.users.map((user) => ({
+      ...user,
+      accountIds: user.accountIds.filter((accountId) => accountId !== id)
+    }));
     clearCache(id);
     const persisted = await saveConfigStore();
     return sendJson(res, { ok: true, config: getConfigPayload(), persisted });
@@ -407,9 +867,6 @@ async function handleConfig(req, res, requestUrl) {
   }
 
   const body = await readJsonBody(req);
-  if (!isAuthed(req, body)) {
-    return sendJson(res, { error: 'Admin password required' }, 401);
-  }
   await ensureConfigLoaded(true);
 
   const instagramUserId = sanitizeInstagramUserId(body.instagramUserId || '');
@@ -481,9 +938,6 @@ async function handleConfigDefault(req, res) {
     return sendJson(res, { error: 'Method not allowed' }, 405);
   }
   const body = await readJsonBody(req);
-  if (!isAuthed(req, body)) {
-    return sendJson(res, { error: 'Admin password required' }, 401);
-  }
   await ensureConfigLoaded(true);
   const id = sanitizeInstagramUserId(body.instagramUserId);
   if (!configStore.accounts.some((account) => account.instagramUserId === id)) {
@@ -500,9 +954,6 @@ async function handleConfigDiscover(req, res) {
   }
 
   const body = await readJsonBody(req);
-  if (!isAuthed(req, body)) {
-    return sendJson(res, { error: 'Admin password required' }, 401);
-  }
 
   const fallback = defaultConfig();
   const accessToken = normalizeAccessToken(body.accessToken || fallback.accessToken || '');
@@ -575,10 +1026,12 @@ function getConfigPayload() {
 }
 
 // Public list for the dashboard's account switcher - ids and labels only, never tokens.
-function getAccountsPayload() {
+function getAccountsPayload(session) {
+  const accounts = allowedAccounts(session);
   return {
-    defaultId: configStore.defaultAccountId,
-    accounts: configStore.accounts.map((account) => ({
+    // A client's "default" is their own first account, never the agency default.
+    defaultId: session.role === 'admin' ? configStore.defaultAccountId : (accounts[0]?.instagramUserId || ''),
+    accounts: accounts.map((account) => ({
       id: account.instagramUserId,
       username: account.username,
       label: account.label,
@@ -589,9 +1042,9 @@ function getAccountsPayload() {
 
 // Overview cards: one cheap profile call per account (cached ~5 min) plus the latest
 // persisted daily snapshot - no media/insights crawl, so it stays fast on serverless.
-async function handleAccountsSummary(res) {
+async function handleAccountsSummary(res, session) {
   await syncHistoryFromSupabase();
-  const cards = await Promise.all(configStore.accounts.map(async (account) => {
+  const cards = await Promise.all(allowedAccounts(session).map(async (account) => {
     const card = {
       id: account.instagramUserId,
       username: account.username,
@@ -613,7 +1066,7 @@ async function handleAccountsSummary(res) {
   }));
   return sendJson(res, {
     mode: cards.length ? 'graph-api' : 'demo',
-    defaultId: configStore.defaultAccountId,
+    defaultId: session.role === 'admin' ? configStore.defaultAccountId : (cards[0]?.id || ''),
     accounts: cards
   });
 }
@@ -658,8 +1111,8 @@ function latestHistorySummary(accountId) {
   };
 }
 
-async function handleLiveStream(req, res, requestUrl) {
-  const activeConfig = accountFromUrl(requestUrl);
+async function handleLiveStream(req, res, requestUrl, session) {
+  const activeConfig = accountFromRequest(requestUrl, session);
   const intervalMs = clamp(toNumber(requestUrl.searchParams.get('interval'), configStore.refreshMs), 15000, 86400000);
   const limit = clamp(toNumber(requestUrl.searchParams.get('limit'), 500), 5, 2000);
   const allMedia = requestUrl.searchParams.get('all') !== '0';
@@ -1525,7 +1978,7 @@ async function fetchRangeFollowers(activeConfig, account, { since, until }) {
 }
 
 // GET /api/insights/range?since=YYYY-MM-DD&until=YYYY-MM-DD&kind=performance|followers
-async function handleRangeInsights(res, requestUrl) {
+async function handleRangeInsights(res, requestUrl, session) {
   const parseDay = (name) => {
     const raw = requestUrl.searchParams.get(name) || '';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
@@ -1551,7 +2004,7 @@ async function handleRangeInsights(res, requestUrl) {
   const since = Math.max(start.sec, floorSec);
   const until = Math.min(finish.sec + 86399, nowSec);
   const kind = requestUrl.searchParams.get('kind') === 'followers' ? 'followers' : 'performance';
-  const activeConfig = accountFromUrl(requestUrl);
+  const activeConfig = accountFromRequest(requestUrl, session);
 
   if (!hasCredentials(activeConfig)) {
     // ponytail: demo mode has no historical Graph data to stand in for. Wire the demo

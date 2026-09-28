@@ -11,13 +11,28 @@ never deployed as a function on its own).
 |---|---|---|
 | `INSTAGRAM_ACCESS_TOKEN` | ✅ | Your Graph API token. This is how the deployed dashboard authenticates — it is **not** editable from the admin page on Vercel (read-only filesystem). |
 | `INSTAGRAM_USER_ID` | ✅ | Your Instagram professional account ID (the number under your username). |
-| `ADMIN_PASSWORD` | recommended | Password for `/admin`. Defaults to `Devanshu@0609` if unset — set your own to override. |
+| `ADMIN_PASSWORD` | ✅ | The admin sign-in password. **No default** — unset means admin login is disabled. Changing it signs the admin out everywhere. |
+| `ADMIN_LOGIN` | optional | The admin login ID. Defaults to `admin`. |
+| `SESSION_SECRET` | ✅ | Signs session cookies. Sign-in refuses to work on Vercel without it. Keep it stable across deploys — changing it signs everyone out. |
+| `TOKEN_ENCRYPTION_KEY` | recommended | Encrypts stored access tokens. 32 random bytes, base64. **Losing it means re-entering every token.** |
 | `GRAPH_API_VERSION` | optional | Defaults to `v23.0`. |
 | `INSTAGRAM_API_MODE` | optional | `auto` (default), `instagram`, or `facebook`. |
-| `SUPABASE_URL` | optional | Enables persistent storage (see below). |
-| `SUPABASE_SERVICE_ROLE_KEY` | optional | Server-only key. **Never expose to the browser.** |
+| `SUPABASE_URL` | ✅ in production | Persistent storage for accounts and client logins (see below). |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ in production | Server-only key. **Never expose to the browser.** |
+
+Generate the secrets locally:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+(use `.toString('base64')` instead for `TOKEN_ENCRYPTION_KEY`)
 
 After changing env vars, **redeploy** for them to take effect.
+
+> **Rotate the old admin password.** Earlier versions shipped a hardcoded default admin
+> password. It is still in this repository's git history, so treat it as public: set a new
+> `ADMIN_PASSWORD` everywhere the dashboard is deployed.
 
 ## Supabase persistence (recommended for Vercel)
 
@@ -46,8 +61,26 @@ Or connect the Git repo in the Vercel dashboard and push.
 
 ## 3. Use
 
-- Dashboard: `https://your-app.vercel.app/`
-- Admin (password-protected): `https://your-app.vercel.app/admin`
+- Sign in: `https://your-app.vercel.app/login`
+- Dashboard: `https://your-app.vercel.app/` (requires a sign-in)
+- Admin: `https://your-app.vercel.app/admin` (admin sign-in only)
+
+## Client logins
+
+Each client gets their own login that sees **only the Instagram accounts you assign**.
+
+1. Connect the client's Instagram account in `/admin` → **Add / edit account** (as before).
+2. In `/admin` → **Client logins**, enter a name and login ID, press **Generate** for the
+   password, tick the account(s) they may see, and **Create client**.
+3. Press **Copy login details** and send them to the client. The password is shown once —
+   only a hash is stored. If it's lost, use **Reset password**.
+
+The server enforces this on every request: a client asking for any other account gets a
+403, and there is no fallback to another account. **Reset password** or **Disable** signs
+the client out immediately; unticking an account removes access on their next request.
+
+Without Supabase on Vercel, client logins (like accounts) live in memory only and vanish
+on the next cold start.
 
 ## Serverless trade-offs (chosen Vercel)
 
@@ -62,5 +95,8 @@ Or connect the Git repo in the Vercel dashboard and push.
 ## Local development
 
 `npm start` runs the full long-running server (live SSE + file persistence) on
-http://localhost:4173. The admin page works the same locally, and saving the token there
-writes `.env`.
+http://localhost:4173. Put `ADMIN_PASSWORD` in `.env` to sign in; without
+`SESSION_SECRET` a random one is used per run, so you are signed out on every restart.
+Accounts and client logins are saved to `config.json` (gitignored).
+
+`node server.auth.check.mjs` and `node server.range.check.mjs` run the self-checks.

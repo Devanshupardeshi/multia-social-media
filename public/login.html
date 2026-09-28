@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Sign in · Multia</title>
+    <link rel="icon" type="image/svg+xml" href="/logos/m-black.svg">
+    <link rel="stylesheet" href="/styles.css?v=27">
+    <style>
+      .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--surface); }
+      .login-card { width: min(380px, 100%); }
+      .login-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; justify-content: center; }
+      .login-brand img { width: 28px; height: 28px; }
+      .login-brand strong { font-size: 1.05rem; }
+      .login-card .panel-header { padding: 18px 18px 0; }
+      .login-body { padding: 16px 18px 18px; display: grid; gap: 12px; }
+      .login-body .primary-button { width: 100%; justify-content: center; }
+      .login-foot { margin: 14px 0 0; color: var(--muted); font-size: 0.75rem; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <main class="login-wrap">
+      <div class="login-card">
+        <div class="login-brand">
+          <img src="/logos/m-black.svg" alt="">
+          <strong>Multia</strong>
+        </div>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="section-label">Instagram dashboard</p>
+              <h2>Sign in</h2>
+            </div>
+          </div>
+          <form class="login-body" id="login-form">
+            <label class="field-stack">
+              <span>Login ID</span>
+              <input id="login-id" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+            </label>
+            <label class="field-stack">
+              <span>Password</span>
+              <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+            </label>
+            <button class="primary-button" id="login-submit" type="submit">Sign in</button>
+            <div class="config-feedback" id="login-feedback" role="status" aria-live="polite"></div>
+          </form>
+        </section>
+        <p class="login-foot">Your login details come from your Multia account manager.</p>
+      </div>
+    </main>
+
+    <script type="module">
+      const form = document.querySelector('#login-form');
+      const submit = document.querySelector('#login-submit');
+      const feedback = document.querySelector('#login-feedback');
+      // The server validates `next` too (same-origin paths only) and returns where to go.
+      const next = new URLSearchParams(location.search).get('next') || '';
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        submit.disabled = true;
+        feedback.className = 'config-feedback';
+        feedback.textContent = 'Signing in…';
+        try {
+          const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              login: document.querySelector('#login-id').value,
+              password: document.querySelector('#login-password').value,
+              next
+            })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `Sign-in failed (${res.status})`);
+          location.replace(data.redirect || '/');
+        } catch (error) {
+          feedback.className = 'config-feedback error';
+          feedback.textContent = error.message;
+          submit.disabled = false;
+        }
+      });
+
+      document.querySelector('#login-id').focus();
+    </script>
+  </body>
+</html>
