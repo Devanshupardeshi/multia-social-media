@@ -103,8 +103,28 @@ function normalizeStoredAccount(raw = {}) {
     label: String(raw.label || ''),
     profilePictureUrl: String(raw.profilePictureUrl || ''),
     graphApiVersion: normalizeGraphVersion(raw.graphApiVersion),
-    apiMode: normalizeApiMode(raw.apiMode)
+    apiMode: normalizeApiMode(raw.apiMode),
+    ads: normalizeStoredAds(raw.ads)
   };
+}
+
+// The Meta ad account whose results this Instagram account's viewers may see.
+function normalizeStoredAds(raw) {
+  const adAccountId = normalizeAdAccountId(raw?.adAccountId);
+  if (!adAccountId) return null;
+  return {
+    adAccountId,
+    accessToken: normalizeAccessToken(readStoredToken(raw.accessToken)),
+    name: String(raw.name || ''),
+    currency: String(raw.currency || ''),
+    timezoneName: String(raw.timezoneName || '')
+  };
+}
+
+// "act_123", "123" and " act_123 " all mean the same ad account.
+export function normalizeAdAccountId(value) {
+  const digits = String(value || '').trim().replace(/^act_/i, '').replace(/[^\d]/g, '');
+  return digits ? `act_${digits}` : '';
 }
 
 function getAccount(id = '') {
@@ -532,7 +552,8 @@ function storeForPersistence() {
     ...configStore,
     accounts: configStore.accounts.map((account) => ({
       ...account,
-      accessToken: encryptSecret(account.accessToken, key)
+      accessToken: encryptSecret(account.accessToken, key),
+      ads: account.ads ? { ...account.ads, accessToken: encryptSecret(account.ads.accessToken, key) } : null
     }))
   };
 }
@@ -700,6 +721,9 @@ export async function handleRequest(req, res) {
       return await handleAccountsSummary(res, session);
     }
 
+    if (pathname === '/api/config/ads') return await handleAdsConfig(req, res, requestUrl);
+    if (pathname === '/api/config/ad-accounts') return await handleAdAccountsDiscover(req, res);
+
     if (requestUrl.pathname === '/api/config') {
       return await handleConfig(req, res, requestUrl);
     }
@@ -795,6 +819,8 @@ function getStatusPayload(config = defaultConfig(), session = null) {
     resolvedGraphHost: resolveGraphHost(config),
     hasAccessToken: Boolean(config.accessToken),
     hasInstagramUserId: Boolean(config.instagramUserId),
+    // Drives whether the Ads page appears - for clients too.
+    hasAds: Boolean(adsGraphConfig(config)),
     instagramUserId: config.instagramUserId,
     username: config.username || '',
     refreshMs: configStore.refreshMs,
@@ -888,7 +914,9 @@ async function handleConfig(req, res, requestUrl) {
     label: String(body.label ?? existing?.label ?? '').trim(),
     profilePictureUrl: existing?.profilePictureUrl || '',
     graphApiVersion: normalizeGraphVersion(body.graphApiVersion || existing?.graphApiVersion),
-    apiMode: normalizeApiMode(body.apiMode || existing?.apiMode)
+    apiMode: normalizeApiMode(body.apiMode || existing?.apiMode),
+    // Editing the Instagram connection never drops its ad account.
+    ads: existing?.ads || null
   };
 
   let validation = null;
@@ -1011,7 +1039,14 @@ function getConfigPayload() {
       graphApiVersion: account.graphApiVersion,
       apiMode: account.apiMode,
       resolvedGraphHost: resolveGraphHost(account),
-      tokenPreview: account.accessToken ? 'token set' : ''
+      tokenPreview: account.accessToken ? 'token set' : '',
+      // Never the ads token itself.
+      ads: account.ads ? {
+        adAccountId: account.ads.adAccountId,
+        name: account.ads.name,
+        currency: account.ads.currency,
+        tokenSource: account.ads.accessToken ? 'own' : 'account'
+      } : null
     })),
     requiredPermissions: [
       'instagram_basic',
@@ -1977,7 +2012,333 @@ async function fetchRangeFollowers(activeConfig, account, { since, until }) {
   };
 }
 
-// GET /api/insights/range?since=YYYY-MM-DD&until=YYYY-MM-DD&kind=performance|followers
+// ---------------------------------------------------------------------------
+// Meta Ads (Marketing API)
+//
+// Unlike Instagram insights, ad insights take any time_range in one call, so a range costs
+// four calls however long it is. Needs a graph.facebook.com token with ads_read -
+// Instagram-login (IG...) tokens can't reach the Marketing API.
+// ---------------------------------------------------------------------------
+
+// Meta keeps ad insights for 37 months.
+const ADS_MAX_LOOKBACK_DAYS = 1120;
+const ADS_ACTION_LABELS = {
+  link_click: 'Link clicks',
+  landing_page_view: 'Landing page views',
+  lead: 'Leads',
+  purchase: 'Purchases',
+  omni_purchase: 'Purchases',
+  add_to_cart: 'Adds to cart',
+  initiate_checkout: 'Checkouts started',
+  complete_registration: 'Registrations',
+  post_engagement: 'Post engagements',
+  page_engagement: 'Page engagements',
+  post_reaction: 'Reactions',
+  comment: 'Comments',
+  post: 'Shares',
+  onsite_conversion_post_save: 'Saves',
+  video_view: 'Video plays (3s)',
+  like: 'Page likes',
+  follow: 'Follows',
+  'onsite_conversion.messaging_conversation_started_7d': 'Messaging conversations',
+  'onsite_conversion.lead_grouped': 'On-Facebook leads',
+  'offsite_conversion.fb_pixel_purchase': 'Website purchases',
+  'offsite_conversion.fb_pixel_lead': 'Website leads'
+};
+const ADS_POSITION_LABELS = {
+  feed: 'Feed',
+  instagram_stories: 'Stories',
+  instagram_reels: 'Reels',
+  instagram_explore: 'Explore',
+  instagram_explore_grid_home: 'Explore home',
+  instagram_profile_feed: 'Profile feed',
+  instagram_search: 'Search results',
+  facebook_reels: 'Reels',
+  facebook_stories: 'Stories',
+  marketplace: 'Marketplace',
+  video_feeds: 'Video feeds',
+  right_hand_column: 'Right column',
+  search: 'Search results',
+  an_classic: 'Audience Network'
+};
+const ADS_PLATFORM_LABELS = {
+  instagram: 'Instagram',
+  facebook: 'Facebook',
+  audience_network: 'Audience Network',
+  messenger: 'Messenger',
+  threads: 'Threads'
+};
+
+const humanize = (key) => String(key || 'unknown')
+  .replace(/^offsite_conversion\.fb_pixel_|^onsite_conversion\./, '')
+  .replace(/[._]+/g, ' ')
+  .replace(/^\w/, (letter) => letter.toUpperCase());
+
+// Marketing API returns every metric as a string.
+const adsNumber = (value) => {
+  const number = Number.parseFloat(value);
+  return Number.isFinite(number) ? number : 0;
+};
+
+// Daily for up to ~3 months, weekly up to a year, monthly beyond - one call either way,
+// this only keeps the chart readable.
+export function adsIncrementFor(sinceKey, untilKey) {
+  const days = Math.round((Date.parse(`${untilKey}T00:00:00Z`) - Date.parse(`${sinceKey}T00:00:00Z`)) / 86400000) + 1;
+  if (days <= 92) return 1;
+  if (days <= 365) return 7;
+  return 'monthly';
+}
+
+function adsActions(row) {
+  const costs = new Map((row.cost_per_action_type || []).map((entry) => [entry.action_type, adsNumber(entry.value)]));
+  return (row.actions || [])
+    .map((entry) => ({
+      type: entry.action_type,
+      label: ADS_ACTION_LABELS[entry.action_type] || humanize(entry.action_type),
+      value: adsNumber(entry.value),
+      costPer: costs.has(entry.action_type) ? costs.get(entry.action_type) : null
+    }))
+    .filter((action) => action.value > 0)
+    .sort((a, b) => b.value - a.value);
+}
+
+function adsSeriesLabel(row, increment) {
+  const start = new Date(`${row.date_start}T00:00:00Z`);
+  if (increment === 'monthly') {
+    return new Intl.DateTimeFormat('en', { month: 'short', year: 'numeric', timeZone: 'UTC' }).format(start);
+  }
+  const short = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(start);
+  return increment === 1 ? short : `Wk of ${short}`;
+}
+
+// Turns the four raw Marketing API responses into the dashboard's shape. Accuracy rules:
+// reach and frequency come only from the whole-range totals row (daily reach is per-day
+// unique and can't be added up); CTR/CPC/CPM are Meta's own totals, never averaged across
+// rows; placement rows add up spend/impressions/clicks only, because reach per position
+// double-counts people seen in more than one position.
+export function summarizeAdsInsights({ totalsRows, seriesRows, campaignRows, placementRows, increment, currency }) {
+  const total = totalsRows[0] || {};
+  const totals = {
+    spend: adsNumber(total.spend),
+    impressions: adsNumber(total.impressions),
+    reach: adsNumber(total.reach),
+    frequency: adsNumber(total.frequency),
+    clicks: adsNumber(total.clicks),
+    linkClicks: adsNumber(total.inline_link_clicks),
+    ctr: adsNumber(total.ctr),
+    cpc: adsNumber(total.cpc),
+    cpm: adsNumber(total.cpm)
+  };
+
+  const series = seriesRows
+    // A row without a usable date can't be placed on the chart - and formatting it would
+    // throw and take the whole ads response down with it.
+    .filter((row) => /^\d{4}-\d{2}-\d{2}$/.test(String(row.date_start || '')))
+    .map((row) => ({
+      key: increment === 'monthly' ? String(row.date_start).slice(0, 7) : row.date_start,
+      label: adsSeriesLabel(row, increment),
+      startDate: row.date_start,
+      endDate: row.date_stop,
+      metrics: {
+        spend: adsNumber(row.spend),
+        impressions: adsNumber(row.impressions),
+        clicks: adsNumber(row.clicks),
+        linkClicks: adsNumber(row.inline_link_clicks)
+      }
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+
+  const campaigns = campaignRows
+    .map((row) => ({
+      id: row.campaign_id,
+      name: row.campaign_name || row.campaign_id,
+      objective: humanize(String(row.objective || '').replace(/^OUTCOME_/, '').toLowerCase()),
+      spend: adsNumber(row.spend),
+      impressions: adsNumber(row.impressions),
+      reach: adsNumber(row.reach),
+      clicks: adsNumber(row.clicks),
+      ctr: adsNumber(row.ctr),
+      cpc: adsNumber(row.cpc),
+      cpm: adsNumber(row.cpm),
+      topAction: adsActions(row)[0] || null
+    }))
+    .sort((a, b) => b.spend - a.spend);
+
+  const platformMap = new Map();
+  const instagramPositions = [];
+  for (const row of placementRows) {
+    const platform = row.publisher_platform || 'unknown';
+    const entry = platformMap.get(platform) || {
+      platform,
+      label: ADS_PLATFORM_LABELS[platform] || humanize(platform),
+      spend: 0,
+      impressions: 0,
+      clicks: 0
+    };
+    entry.spend += adsNumber(row.spend);
+    entry.impressions += adsNumber(row.impressions);
+    entry.clicks += adsNumber(row.clicks);
+    platformMap.set(platform, entry);
+    if (platform === 'instagram') {
+      instagramPositions.push({
+        position: row.platform_position,
+        label: ADS_POSITION_LABELS[row.platform_position] || humanize(row.platform_position),
+        spend: adsNumber(row.spend),
+        impressions: adsNumber(row.impressions),
+        clicks: adsNumber(row.clicks)
+      });
+    }
+  }
+
+  return {
+    currency: currency || '',
+    granularity: increment === 1 ? 'day' : (increment === 7 ? 'week' : 'month'),
+    totals,
+    actions: adsActions(total).slice(0, 6),
+    series,
+    campaigns,
+    platforms: [...platformMap.values()].sort((a, b) => b.spend - a.spend),
+    instagramPositions: instagramPositions.sort((a, b) => b.spend - a.spend),
+    // Nothing ran in this range - a real answer, not an error.
+    empty: totals.impressions === 0 && totals.spend === 0
+  };
+}
+
+// Follows paging cursors so long ranges or many campaigns aren't silently truncated.
+async function graphGetAll(edge, params, activeConfig, maxPages = 10) {
+  const rows = [];
+  let after = '';
+  for (let page = 0; page < maxPages; page += 1) {
+    const response = await graphGet(edge, after ? { ...params, after } : params, activeConfig);
+    rows.push(...(response.data || []));
+    after = response.paging?.next ? response.paging?.cursors?.after : '';
+    if (!after) break;
+  }
+  return rows;
+}
+
+// The token ads calls use: the dedicated ads token, else the account's own token when that
+// is already a Facebook-host token. Always graph.facebook.com.
+function adsGraphConfig(account) {
+  const ads = account?.ads;
+  if (!ads?.adAccountId) return null;
+  const fallback = resolveGraphHost(account) === 'graph.facebook.com' ? account.accessToken : '';
+  const accessToken = ads.accessToken || fallback;
+  if (!accessToken) return null;
+  return { accessToken, graphApiVersion: account.graphApiVersion || 'v23.0', apiMode: 'facebook' };
+}
+
+async function fetchAdsInsights(account, { sinceKey, untilKey }) {
+  const graphConfig = adsGraphConfig(account);
+  if (!graphConfig) {
+    return { available: false, noAds: true, reason: 'No ad account is connected to this Instagram account yet.' };
+  }
+  const edge = `/${account.ads.adAccountId}/insights`;
+  const common = { time_range: JSON.stringify({ since: sinceKey, until: untilKey }), limit: 500 };
+  const increment = adsIncrementFor(sinceKey, untilKey);
+  const actionFields = 'actions,cost_per_action_type';
+
+  try {
+    const [totalsRows, seriesRows, campaignRows, placementRows] = await Promise.all([
+      graphGetAll(edge, {
+        ...common, level: 'account',
+        fields: `spend,impressions,reach,frequency,clicks,inline_link_clicks,ctr,cpc,cpm,${actionFields}`
+      }, graphConfig),
+      graphGetAll(edge, {
+        ...common, level: 'account', time_increment: increment,
+        fields: 'spend,impressions,clicks,inline_link_clicks'
+      }, graphConfig),
+      graphGetAll(edge, {
+        ...common, level: 'campaign',
+        fields: `campaign_id,campaign_name,objective,spend,impressions,reach,clicks,ctr,cpc,cpm,${actionFields}`
+      }, graphConfig),
+      graphGetAll(edge, {
+        ...common, level: 'account', breakdowns: 'publisher_platform,platform_position',
+        fields: 'spend,impressions,clicks'
+      }, graphConfig)
+    ]);
+    return {
+      available: true,
+      adAccount: { id: account.ads.adAccountId, name: account.ads.name || '', timezoneName: account.ads.timezoneName || '' },
+      ...summarizeAdsInsights({ totalsRows, seriesRows, campaignRows, placementRows, increment, currency: account.ads.currency })
+    };
+  } catch (error) {
+    // Meta's own wording (e.g. missing ads_read, expired token) beats a generic message.
+    return { available: false, reason: error.message || 'Meta declined the ads insights request.' };
+  }
+}
+
+// POST /api/config/ads {instagramUserId, adAccountId, accessToken?} attaches an ad account to
+// an Instagram account; DELETE ?id=<instagramUserId> detaches it. Separate from saving the
+// Instagram connection, so an expired Instagram token never blocks connecting ads.
+async function handleAdsConfig(req, res, requestUrl) {
+  await ensureConfigLoaded(true);
+
+  if (req.method === 'DELETE') {
+    const id = sanitizeInstagramUserId(requestUrl.searchParams.get('id'));
+    const account = configStore.accounts.find((entry) => entry.instagramUserId === id);
+    if (!account) return sendJson(res, { error: 'Account not found' }, 404);
+    configStore.accounts = configStore.accounts.map((entry) => (entry === account ? { ...entry, ads: null } : entry));
+    const persisted = await saveConfigStore();
+    return sendJson(res, { ok: true, config: getConfigPayload(), persisted });
+  }
+
+  if (req.method !== 'POST') return sendJson(res, { error: 'Method not allowed' }, 405);
+  const body = await readJsonBody(req);
+  const account = configStore.accounts.find((entry) => entry.instagramUserId === sanitizeInstagramUserId(body.instagramUserId));
+  if (!account) return sendJson(res, { error: 'Pick the Instagram account these ads belong to.' }, 400);
+
+  const adAccountId = normalizeAdAccountId(body.adAccountId);
+  if (!adAccountId) return sendJson(res, { error: 'Ad account ID is required (e.g. act_1234567890).' }, 400);
+
+  // Blank token field keeps the stored ads token, like the Instagram token field does.
+  const accessToken = normalizeAccessToken(body.accessToken || account.ads?.accessToken || '');
+  const candidate = { ...account, ads: { adAccountId, accessToken } };
+  const graphConfig = adsGraphConfig(candidate);
+  if (!graphConfig) {
+    return sendJson(res, { error: 'Paste a Facebook token with ads_read. Instagram-login (IG…) tokens cannot read ads.' }, 400);
+  }
+
+  const adAccount = await graphGet(`/${adAccountId}`, { fields: 'id,name,currency,account_status,timezone_name' }, graphConfig);
+  const ads = {
+    adAccountId,
+    accessToken,
+    name: adAccount.name || adAccountId,
+    currency: adAccount.currency || '',
+    timezoneName: adAccount.timezone_name || ''
+  };
+  configStore.accounts = configStore.accounts.map((entry) => (entry === account ? { ...entry, ads } : entry));
+  const persisted = await saveConfigStore();
+  return sendJson(res, { ok: true, config: getConfigPayload(), adAccount: { id: adAccountId, name: ads.name, currency: ads.currency }, persisted });
+}
+
+// POST /api/config/ad-accounts {accessToken?, instagramUserId?} -> ad accounts the token can read.
+async function handleAdAccountsDiscover(req, res) {
+  if (req.method !== 'POST') return sendJson(res, { error: 'Method not allowed' }, 405);
+  const body = await readJsonBody(req);
+  const account = getAccount(body.instagramUserId || '');
+  const accessToken = normalizeAccessToken(body.accessToken || account?.ads?.accessToken
+    || (account && resolveGraphHost(account) === 'graph.facebook.com' ? account.accessToken : ''));
+  if (!accessToken) {
+    return sendJson(res, { error: 'Paste a Facebook token with ads_read. Instagram-login (IG…) tokens cannot read ads.' }, 400);
+  }
+  const rows = await graphGetAll('/me/adaccounts', {
+    fields: 'id,name,account_status,currency,timezone_name', limit: 100
+  }, { accessToken, graphApiVersion: account?.graphApiVersion || 'v23.0', apiMode: 'facebook' }, 5);
+  return sendJson(res, {
+    ok: true,
+    adAccounts: rows.map((row) => ({
+      id: row.id,
+      name: row.name || row.id,
+      currency: row.currency || '',
+      timezoneName: row.timezone_name || '',
+      // 1 = active; anything else (disabled, unsettled, closed...) still has history to read.
+      active: Number(row.account_status) === 1
+    }))
+  });
+}
+
+// GET /api/insights/range?since=YYYY-MM-DD&until=YYYY-MM-DD&kind=performance|followers|ads
 async function handleRangeInsights(res, requestUrl, session) {
   const parseDay = (name) => {
     const raw = requestUrl.searchParams.get(name) || '';
@@ -1995,16 +2356,40 @@ async function handleRangeInsights(res, requestUrl, session) {
     return sendJson(res, { error: 'since must be on or before until.' }, 400);
   }
 
+  const requestedKind = requestUrl.searchParams.get('kind');
+  const kind = ['followers', 'ads'].includes(requestedKind) ? requestedKind : 'performance';
   const nowSec = Math.floor(Date.now() / 1000);
-  const floorSec = nowSec - RANGE_MAX_LOOKBACK_DAYS * 86400;
+  const lookbackDays = kind === 'ads' ? ADS_MAX_LOOKBACK_DAYS : RANGE_MAX_LOOKBACK_DAYS;
+  const floorSec = nowSec - lookbackDays * 86400;
   if (finish.sec < floorSec) {
-    return sendJson(res, { error: 'Instagram only keeps account insights for about 2 years. Pick a range inside the last 728 days.' }, 400);
+    return sendJson(res, {
+      error: kind === 'ads'
+        ? 'Meta keeps ad insights for 37 months. Pick a more recent range.'
+        : 'Instagram only keeps account insights for about 2 years. Pick a range inside the last 728 days.'
+    }, 400);
   }
 
   const since = Math.max(start.sec, floorSec);
   const until = Math.min(finish.sec + 86399, nowSec);
-  const kind = requestUrl.searchParams.get('kind') === 'followers' ? 'followers' : 'performance';
+  // The gate: throws 403 for any account this session may not read - ads included, since
+  // an ad account is only ever reached through the Instagram account it belongs to.
   const activeConfig = accountFromRequest(requestUrl, session);
+
+  if (kind === 'ads') {
+    const sinceKey = new Date(since * 1000).toISOString().slice(0, 10);
+    const untilKey = new Date(until * 1000).toISOString().slice(0, 10);
+    const cacheKey = `${activeConfig.instagramUserId}:ads:${activeConfig.ads?.adAccountId || ''}:${sinceKey}:${untilKey}`;
+    const cached = rangeInsightsCache.get(cacheKey);
+    if (cached && cached.expires > Date.now()) return sendJson(res, cached.value);
+    const value = {
+      ...await fetchAdsInsights(activeConfig, { sinceKey, untilKey }),
+      requested: { since: start.key, until: finish.key, kind },
+      clamped: since !== start.sec
+    };
+    // Don't pin a failure (bad token, missing permission) for half an hour.
+    if (value.available) rangeInsightsCache.set(cacheKey, { value, expires: Date.now() + 30 * 60 * 1000 });
+    return sendJson(res, value);
+  }
 
   if (!hasCredentials(activeConfig)) {
     // ponytail: demo mode has no historical Graph data to stand in for. Wire the demo

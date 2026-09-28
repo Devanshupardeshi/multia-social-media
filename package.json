@@ -6,6 +6,7 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js"
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/admin.js",
+    "test": "node server.range.check.mjs && node server.auth.check.mjs && node server.ads.check.mjs"
   }
 }

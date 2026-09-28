@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Multia · Instagram Command Center</title>
     <link rel="icon" type="image/svg+xml" href="/logos/m-black.svg">
-    <link rel="stylesheet" href="/styles.css?v=27">
+    <link rel="stylesheet" href="/styles.css?v=28">
   </head>
   <body>
     <div class="app-shell">
@@ -36,6 +36,12 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             </span>
             Audience
+          </a>
+          <a class="nav-item hidden" href="#ads" id="ads-nav-item">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+            </span>
+            Ads
           </a>
           <a class="nav-item" href="#content">
             <span class="nav-icon" aria-hidden="true">
@@ -641,6 +647,27 @@
         </section>
         </div>
 
+        <div class="app-page" data-page="ads">
+          <section class="panel" aria-labelledby="ads-title">
+            <div class="panel-header compact">
+              <div>
+                <p class="section-label">Meta Ads</p>
+                <h2 id="ads-title">Ad performance</h2>
+              </div>
+              <div class="range-control">
+                <button class="secondary-button small-button range-trigger" id="ads-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="ads-calendar">
+                  <span id="ads-range-label">Last 30 days</span>
+                  <span class="range-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="calendar-pop" id="ads-calendar" role="dialog" aria-label="Select ads date range" hidden></div>
+              </div>
+            </div>
+            <div class="ads-body" id="ads-body">
+              <div class="chart-empty">Open this page to load ad results</div>
+            </div>
+          </section>
+        </div>
+
         <div class="app-page" data-page="guide">
         <section class="panel guide-panel" id="guide" aria-labelledby="guide-title">
           <div class="panel-header">
@@ -672,6 +699,6 @@
       </main>
     </div>
 
-    <script src="/app.js?v=43" type="module"></script>
+    <script src="/app.js?v=45" type="module"></script>
   </body>
 </html>

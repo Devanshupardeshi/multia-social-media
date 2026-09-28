@@ -31,6 +31,9 @@ const state = {
   accountWindow: null,
   accountRange: null,
   accountCompareRange: null,
+  adsRange: null,
+  adsCompareRange: null,
+  hasAds: false,
   usernameHidden: false,
   role: ''
 };
@@ -111,7 +114,12 @@ const els = {
   exportPdf: document.querySelector('#export-pdf'),
   logoutButton: document.querySelector('#logout-button'),
   adminNavItem: document.querySelector('.nav-item[href="/admin"]'),
-  accountsNavItem: document.querySelector('.nav-item[href="/"]')
+  accountsNavItem: document.querySelector('.nav-item[href="/"]'),
+  adsNavItem: document.querySelector('#ads-nav-item'),
+  adsRangeTrigger: document.querySelector('#ads-range-trigger'),
+  adsRangeLabel: document.querySelector('#ads-range-label'),
+  adsCalendar: document.querySelector('#ads-calendar'),
+  adsBody: document.querySelector('#ads-body')
 };
 
 // Eye-toggle icons (defined before init() runs so applyUsernameMask can use them).
@@ -177,19 +185,38 @@ const RANGE_PANELS = {
       const range = normalizedRange(state.accountRange);
       return range ? { start: parseKey(range.start), end: parseKey(range.end) } : null;
     },
-    rerender: () => renderAccountInsights()
+    rerender: () => renderAccountInsights(),
+    unsetLabel: 'Preset window'
+  },
+  ads: {
+    kind: 'ads',
+    calendar: () => els.adsCalendar,
+    trigger: () => els.adsRangeTrigger,
+    rangeKey: 'adsRange',
+    compareKey: 'adsCompareRange',
+    dataDays: () => [],
+    activeRange: () => {
+      const range = normalizedRange(state.adsRange) || defaultAdsRange();
+      return { start: parseKey(range.start), end: parseKey(range.end) };
+    },
+    rerender: () => renderAds(),
+    unsetLabel: 'Last 30 days',
+    mapBucket: (bucket) => ({ ...bucket, value: metricNumber(bucket.metrics?.spend, 0) })
   }
 };
 
 // One percentage-change badge shared by every panel that compares two windows.
-function deltaBadge(current, previous) {
+// `invert` is for costs (CPC, CPM, cost per result): a rise is bad news, so the colour
+// flips while the signed percentage stays truthful.
+function deltaBadge(current, previous, invert = false, format = compactNumber) {
   const a = metricNumber(current, 0);
   const b = metricNumber(previous, 0);
-  const cls = a === b ? 'flat' : (a > b ? 'up' : 'down');
+  const direction = a === b ? 'flat' : (a > b ? 'up' : 'down');
+  const cls = invert && direction !== 'flat' ? (direction === 'up' ? 'down' : 'up') : direction;
   const pct = b === 0 ? null : ((a - b) / Math.abs(b)) * 100;
   const text = pct === null
-    ? `vs ${compactNumber(b)}`
-    : `${pct > 0 ? '+' : ''}${pct.toFixed(1)}% vs ${compactNumber(b)}`;
+    ? `vs ${format(b)}`
+    : `${pct > 0 ? '+' : ''}${pct.toFixed(1)}% vs ${format(b)}`;
   return `<em class="delta-badge ${cls}">${escapeHtml(text)}</em>`;
 }
 
@@ -327,6 +354,8 @@ function renderRangeCalendar() {
 
   const primary = cal.draft.primary;
   const compare = cal.draft.compare;
+  // What an unset Range A actually shows differs per panel - say so, not "All available".
+  const unsetLabel = panel.unsetLabel || 'All available';
   const pendingKey = cal.pending;
 
   const monthLabel = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, month, 1));
@@ -361,7 +390,7 @@ function renderRangeCalendar() {
     </div>
     <div class="cal-targets">
       <button class="cal-target${cal.target === 'primary' ? ' active' : ''}" type="button" data-cal-target="primary">
-        <span>Range A</span><strong>${escapeHtml(primary ? rangeChipLabel(primary) : 'All available')}</strong>
+        <span>Range A</span><strong>${escapeHtml(primary ? rangeChipLabel(primary) : unsetLabel)}</strong>
       </button>
       <button class="cal-target${cal.target === 'compare' ? ' active' : ''}${compare ? ' has-value' : ''}" type="button" data-cal-target="compare">
         <span>Compare with</span><strong>${escapeHtml(rangeChipLabel(compare))}</strong>
@@ -372,7 +401,7 @@ function renderRangeCalendar() {
     <div class="cal-foot">
       <span class="cal-selection">${escapeHtml(selection)}</span>
       <span class="cal-actions">
-        <button class="cal-reset" type="button" data-cal-reset>All available</button>
+        <button class="cal-reset" type="button" data-cal-reset>${escapeHtml(unsetLabel)}</button>
         <button class="cal-apply" type="button" data-cal-apply>Apply</button>
       </span>
     </div>
@@ -580,7 +609,9 @@ function renderComparisonBars(rawPrimary, rawCompare, options) {
   const slot = innerWidth / slots;
   const groupWidth = Math.min(58, slot * 0.78);
   const gap = Math.max(1.5, Math.min(4, groupWidth * 0.08));
-  const barWidth = Math.max(2, (groupWidth - gap) / 2);
+  // One series (no comparison range) gets full-width bars instead of half a pair.
+  const seriesCount = compare.length ? 2 : 1;
+  const barWidth = Math.max(2, (groupWidth - gap * (seriesCount - 1)) / seriesCount);
 
   const bar = (point, slotIndex, seriesIndex, seriesLabel, rangeLabel) => {
     if (!point) return '';
@@ -598,7 +629,7 @@ function renderComparisonBars(rawPrimary, rawCompare, options) {
   };
 
   const bars = Array.from({ length: slots }, (_, index) => (
-    bar(primary[index], index, 0, 'Range A', options.primaryLabel)
+    bar(primary[index], index, 0, options.primaryName || 'Range A', options.primaryLabel)
     + bar(compare[index], index, 1, 'Range B', options.compareLabel)
   )).join('');
 
@@ -793,7 +824,7 @@ function retriggerAssemble() {
 
 // Hash router: each sidebar item is its own page. All pages stay in the DOM and
 // keep rendering on every sync - the router only controls which one is visible.
-const APP_PAGES = ['overview', 'analytics', 'audience', 'content', 'operations', 'pulse', 'reports', 'guide'];
+const APP_PAGES = ['overview', 'analytics', 'audience', 'ads', 'content', 'operations', 'pulse', 'reports', 'guide'];
 
 function currentPage() {
   const hash = location.hash.replace('#', '');
@@ -810,6 +841,7 @@ function applyPage() {
     const href = item.getAttribute('href') || '';
     item.classList.toggle('active', href === `#${page}`);
   });
+  if (page === 'ads') renderAds();
   window.scrollTo(0, 0);
 }
 
@@ -835,6 +867,225 @@ function showNoAccessNotice() {
 async function logout() {
   await fetch('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
   location.replace('/login');
+}
+
+// ---------------------------------------------------------------------------
+// Meta Ads page
+//
+// Every figure is Meta's own: reach and frequency come from the whole-range total (never
+// added up day by day), and CTR/CPC/CPM are Meta's totals, not averages of rows. The
+// server enforces which ad account this login may see - it is reached only through the
+// Instagram account the session is already allowed to read.
+// ---------------------------------------------------------------------------
+
+function defaultAdsRange() {
+  const end = startOfDay(new Date());
+  const start = new Date(end);
+  start.setDate(end.getDate() - 29);
+  return { start: dayKey(start), end: dayKey(end) };
+}
+
+function updateAdsRangeLabel() {
+  if (!els.adsRangeLabel) return;
+  const range = normalizedRange(state.adsRange);
+  els.adsRangeLabel.textContent = withCompareSuffix(range ? rangeChipLabel(range) : 'Last 30 days', state.adsCompareRange);
+}
+
+function adsMoney(value, currency, compact = false) {
+  const amount = metricNumber(value, 0);
+  if (!currency) return compact ? compactNumber(amount) : formatNumber(amount);
+  try {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency,
+      notation: compact ? 'compact' : 'standard',
+      maximumFractionDigits: 2
+    }).format(amount);
+  } catch {
+    return formatNumber(amount); // unknown currency code - still show the number
+  }
+}
+
+function renderAds() {
+  if (!els.adsBody) return;
+  updateAdsRangeLabel();
+  if (!state.hasAds) {
+    els.adsBody.innerHTML = '<div class="chart-empty">No ad account connected yet.</div>';
+    return;
+  }
+
+  const primaryRange = normalizedRange(state.adsRange) || defaultAdsRange();
+  const compareRange = normalizedRange(state.adsCompareRange);
+  const primary = requestRangeData('ads', primaryRange, renderAds);
+  const compare = compareRange ? requestRangeData('ads', compareRange, renderAds) : null;
+  if (primary.status !== 'ready') {
+    els.adsBody.innerHTML = rangeStatusHtml(primary, primaryRange);
+    return;
+  }
+  if (compare && compare.status !== 'ready') {
+    els.adsBody.innerHTML = rangeStatusHtml(compare, compareRange);
+    return;
+  }
+
+  const a = primary.payload;
+  const b = compare ? compare.payload : null;
+  if (a.empty && (!b || b.empty)) {
+    els.adsBody.innerHTML = `<div class="chart-empty">No ads ran between ${escapeHtml(rangeSpanLabel(primaryRange))}${b ? ' or in the comparison range' : ''}.</div>`;
+    return;
+  }
+
+  const currency = a.currency || b?.currency || '';
+  els.adsBody.innerHTML = [
+    b ? `<p class="ai-compare-head">${escapeHtml(rangeSpanLabel(primaryRange))} <span>vs</span> ${escapeHtml(rangeSpanLabel(compareRange))}</p>` : '',
+    adsKpiTiles(a, b, currency),
+    adsResultTiles(a, b, currency),
+    adsSpendChart(a, b, primaryRange, compareRange, currency),
+    adsPlacementSplit(a, currency),
+    adsCampaignTable(a, b, currency),
+    `<p class="panel-footnote">${escapeHtml(adsFootnote(a))}</p>`
+  ].join('');
+}
+
+function adsTile({ label, value, prev, main, sub, invert = false, format }) {
+  const delta = prev === undefined || prev === null ? '' : deltaBadge(value, prev, invert, format);
+  return `<div class="ai-tile"><span>${escapeHtml(label)}</span><strong>${escapeHtml(main)}</strong><small>${escapeHtml(sub)}</small>${delta}</div>`;
+}
+
+function adsKpiTiles(a, b, currency) {
+  const t = a.totals;
+  const p = b?.totals;
+  const money = (value) => adsMoney(value, currency);
+  const fixed = (digits, suffix = '') => (value) => `${metricNumber(value, 0).toFixed(digits)}${suffix}`;
+  return `<div class="ai-tiles ads-tiles">${[
+    { label: 'Spend', value: t.spend, prev: p?.spend, main: adsMoney(t.spend, currency, true), sub: money(t.spend), format: money },
+    { label: 'Impressions', value: t.impressions, prev: p?.impressions, main: compactNumber(t.impressions), sub: formatNumber(t.impressions) },
+    { label: 'Reach', value: t.reach, prev: p?.reach, main: compactNumber(t.reach), sub: 'unique people, whole range' },
+    { label: 'Frequency', value: t.frequency, prev: p?.frequency, main: fixed(2)(t.frequency), sub: 'times each person saw an ad', format: fixed(2) },
+    { label: 'Clicks', value: t.clicks, prev: p?.clicks, main: compactNumber(t.clicks), sub: `${formatNumber(t.linkClicks)} link clicks` },
+    { label: 'CTR', value: t.ctr, prev: p?.ctr, main: fixed(2, '%')(t.ctr), sub: 'clicks per impression', format: fixed(2, '%') },
+    { label: 'CPC', value: t.cpc, prev: p?.cpc, main: money(t.cpc), sub: 'cost per click', invert: true, format: money },
+    { label: 'CPM', value: t.cpm, prev: p?.cpm, main: money(t.cpm), sub: 'cost per 1,000 impressions', invert: true, format: money }
+  ].map(adsTile).join('')}</div>`;
+}
+
+// What the ads achieved, by Meta's own action types - no invented "results" number.
+function adsResultTiles(a, b, currency) {
+  if (!a.actions.length) return '';
+  const previous = new Map((b?.actions || []).map((action) => [action.type, action]));
+  const money = (value) => adsMoney(value, currency);
+  const tiles = a.actions.slice(0, 4).map((action) => {
+    const prev = b ? previous.get(action.type) : null;
+    const cost = action.costPer === null ? 'cost not reported' : `${money(action.costPer)} each`;
+    const countDelta = b ? deltaBadge(action.value, prev?.value ?? 0) : '';
+    const costDelta = prev && action.costPer !== null && prev.costPer !== null
+      ? deltaBadge(action.costPer, prev.costPer, true, money)
+      : '';
+    return `<div class="ai-tile"><span>${escapeHtml(action.label)}</span><strong>${escapeHtml(compactNumber(action.value))}</strong><small>${escapeHtml(cost)}</small>${countDelta}${costDelta}</div>`;
+  });
+  return `<p class="ads-subhead">Results</p><div class="ai-tiles ads-tiles">${tiles.join('')}</div>`;
+}
+
+function adsSpendChart(a, b, primaryRange, compareRange, currency) {
+  if (!a.series.length && !b?.series.length) return '';
+  const unit = { day: 'day', week: 'week', month: 'month' }[a.granularity] || 'period';
+  return `<p class="ads-subhead">Spend by ${unit}</p>${renderComparisonBars(a.series, b ? b.series : [], {
+    read: (point) => point.metrics.spend,
+    metricLabel: currency ? `Spend (${currency})` : 'Spend',
+    primaryName: b ? 'Range A' : 'Spend',
+    primaryLabel: rangeSpanLabel(primaryRange),
+    compareLabel: compareRange ? rangeSpanLabel(compareRange) : '',
+    ariaLabel: b ? 'Ad spend, range A against range B' : 'Ad spend over time',
+    source: 'Meta Marketing API insights, time_increment series.',
+    note: b
+      ? `Comparing ${rangeSpanLabel(primaryRange)} against ${rangeSpanLabel(compareRange)}, aligned bucket by bucket.`
+      : `Spend per ${unit}, in the ad account's currency.`
+  })}`;
+}
+
+const ADS_PLATFORM_COLORS = ['var(--ink)', 'var(--coral)', 'var(--amber)', 'var(--border-strong)', 'var(--subtle)'];
+
+function adsPlacementSplit(a, currency) {
+  const total = a.platforms.reduce((sum, platform) => sum + platform.spend, 0);
+  if (!total) return '';
+  const color = (index) => ADS_PLATFORM_COLORS[index % ADS_PLATFORM_COLORS.length];
+  const segments = a.platforms.map((platform, index) => (
+    `<span class="seg" style="width:${(platform.spend / total * 100).toFixed(2)}%;background:${color(index)}"></span>`
+  )).join('');
+  const legend = a.platforms.map((platform, index) => `
+    <div><i style="background:${color(index)}"></i><span>${escapeHtml(platform.label)}</span><strong>${percent(platform.spend / total)}</strong><small>${escapeHtml(adsMoney(platform.spend, currency))}</small></div>`).join('');
+
+  const igTotal = a.instagramPositions.reduce((sum, position) => sum + position.spend, 0);
+  const positions = a.instagramPositions.length ? `
+    <p class="ads-subhead">Instagram placements</p>
+    <div class="table-wrap"><table class="ads-table">
+      <thead><tr><th scope="col">Placement</th><th scope="col">Spend</th><th scope="col">Share of IG</th><th scope="col">Impressions</th><th scope="col">Clicks</th></tr></thead>
+      <tbody>${a.instagramPositions.map((position) => `
+        <tr>
+          <td>${escapeHtml(position.label)}</td>
+          <td>${escapeHtml(adsMoney(position.spend, currency))}</td>
+          <td>${igTotal ? percent(position.spend / igTotal) : '—'}</td>
+          <td>${formatNumber(position.impressions)}</td>
+          <td>${formatNumber(position.clicks)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>` : '';
+
+  return `
+    <div class="ai-split">
+      <div class="ai-split-head"><span>Where the money went</span><small>${escapeHtml(adsMoney(total, currency))} total</small></div>
+      <div class="ai-split-bar" role="img" aria-label="Ad spend by platform">${segments}</div>
+      <div class="ai-split-legend">${legend}</div>
+    </div>${positions}`;
+}
+
+function adsCampaignTable(a, b, currency) {
+  if (!a.campaigns.length) return '';
+  const previous = new Map((b?.campaigns || []).map((campaign) => [campaign.id, campaign]));
+  const money = (value) => adsMoney(value, currency);
+  const rows = a.campaigns.map((campaign) => {
+    const prev = previous.get(campaign.id);
+    const change = !b ? '' : (prev ? deltaBadge(campaign.spend, prev.spend, false, money) : '<em class="delta-badge flat">new</em>');
+    const top = campaign.topAction
+      ? `${compactNumber(campaign.topAction.value)} ${campaign.topAction.label.toLowerCase()}${campaign.topAction.costPer === null ? '' : ` · ${money(campaign.topAction.costPer)} each`}`
+      : '—';
+    return `
+      <tr>
+        <td><strong>${escapeHtml(campaign.name)}</strong><small>${escapeHtml(campaign.objective)}</small></td>
+        <td>${escapeHtml(money(campaign.spend))}${change}</td>
+        <td>${formatNumber(campaign.impressions)}</td>
+        <td>${formatNumber(campaign.reach)}</td>
+        <td>${formatNumber(campaign.clicks)}</td>
+        <td>${campaign.ctr.toFixed(2)}%</td>
+        <td>${escapeHtml(money(campaign.cpc))}</td>
+        <td>${escapeHtml(money(campaign.cpm))}</td>
+        <td>${escapeHtml(top)}</td>
+      </tr>`;
+  }).join('');
+
+  // Campaigns that only ran in the comparison range would otherwise vanish silently.
+  const current = new Set(a.campaigns.map((campaign) => campaign.id));
+  const ended = (b?.campaigns || []).filter((campaign) => !current.has(campaign.id) && campaign.spend > 0);
+  const endedNote = ended.length
+    ? `<p class="panel-footnote">Ran only in the comparison range: ${ended.map((campaign) => `${escapeHtml(campaign.name)} (${escapeHtml(money(campaign.spend))})`).join(', ')}.</p>`
+    : '';
+
+  return `
+    <p class="ads-subhead">Campaigns</p>
+    <div class="table-wrap"><table class="ads-table">
+      <thead><tr>
+        <th scope="col">Campaign</th><th scope="col">Spend</th><th scope="col">Impressions</th><th scope="col">Reach</th>
+        <th scope="col">Clicks</th><th scope="col">CTR</th><th scope="col">CPC</th><th scope="col">CPM</th><th scope="col">Top result</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>${endedNote}`;
+}
+
+function adsFootnote(a) {
+  const account = a.adAccount || {};
+  const name = account.name ? `${account.name} (${account.id})` : (account.id || 'the connected ad account');
+  return `Figures come straight from Meta's Marketing API for ${name}${a.currency ? `, in ${a.currency}` : ''}. `
+    + `Dates follow the ad account's timezone${account.timezoneName ? ` (${account.timezoneName})` : ''}. `
+    + 'Results use the attribution setting of each ad set in Ads Manager. Reach counts unique people across the whole range, so it is never the sum of daily reach.';
 }
 
 function populateAccountSwitcher() {
@@ -994,6 +1245,7 @@ function bindEvents() {
   bindRangeCalendar('reach');
   bindRangeCalendar('follower');
   bindRangeCalendar('account');
+  bindRangeCalendar('ads');
 
   document.addEventListener('click', (event) => {
     if (event.target.closest('.range-control')) return;
@@ -1093,6 +1345,9 @@ async function loadStatus() {
   try {
     const status = await fetchJson(withAccount('/api/status'));
     state.refreshMs = status.refreshMs || state.refreshMs;
+    state.hasAds = Boolean(status.hasAds);
+    els.adsNavItem?.classList.toggle('hidden', !state.hasAds);
+    if (currentPage() === 'ads') renderAds();
     els.refreshSelect.value = String(closestRefreshOption(state.refreshMs));
     updateConnection(status.mode === 'graph-api' ? 'connected' : 'demo', status.mode === 'graph-api' ? 'Graph API' : 'Demo mode');
   } catch {

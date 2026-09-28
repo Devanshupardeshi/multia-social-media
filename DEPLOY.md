@@ -82,6 +82,36 @@ the client out immediately; unticking an account removes access on their next re
 Without Supabase on Vercel, client logins (like accounts) live in memory only and vanish
 on the next cold start.
 
+## Meta Ads
+
+Connect an ad account to an Instagram account in `/admin` → **Connect an ad account**.
+Every client login assigned to that Instagram account then gets an **Ads** page for that ad
+account — and no other. Clients can never name an ad account themselves; the server only
+reaches it through the Instagram account their login is allowed to read.
+
+**The token needs `ads_read` and must be a Facebook token.** Instagram-login tokens (those
+starting `IG`) cannot read the Marketing API. If the Instagram account is already connected
+with a Facebook token that has `ads_read`, you can leave the ads token blank.
+
+For tokens that don't expire (recommended for both Instagram and ads):
+
+1. Create a Meta App at developers.facebook.com (type **Business**). Free, no App Review is
+   needed for assets your own business manages.
+2. In **Business Settings → Users → System users**, add a system user (Admin).
+3. **Add assets** to it: each Page, Instagram account and ad account you manage — including
+   client assets shared with your Business Manager as a partner.
+4. **Generate new token** for your app with `ads_read`, `instagram_basic`,
+   `instagram_manage_insights` and `pages_read_engagement`, set to never expire.
+
+Graph API Explorer tokens are fine for a quick test but expire within hours, and user tokens
+die when that person changes their Facebook password.
+
+What the Ads page shows, per date range (with the same compare picker as the rest of the
+dashboard): spend, impressions, reach, frequency, clicks, CTR, CPC, CPM; results by Meta's
+own action types with cost per result; spend over time; the Facebook / Instagram /
+Audience Network split with Instagram placements; and campaigns. Each range costs four
+Marketing API calls however long it is, and Meta keeps 37 months of ad insights.
+
 ## Serverless trade-offs (chosen Vercel)
 
 - **No live SSE** — the dashboard polls on the refresh interval instead.

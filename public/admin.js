@@ -31,7 +31,16 @@ const els = {
   clientFeedback: document.querySelector('#client-feedback'),
   credentialCard: document.querySelector('#credential-card'),
   credentialText: document.querySelector('#credential-text'),
-  copyCredentials: document.querySelector('#copy-credentials')
+  copyCredentials: document.querySelector('#copy-credentials'),
+  adsForm: document.querySelector('#ads-form'),
+  adsIgAccount: document.querySelector('#ads-ig-account'),
+  adsToken: document.querySelector('#ads-token'),
+  adsAccountId: document.querySelector('#ads-account-id'),
+  saveAds: document.querySelector('#save-ads'),
+  findAdAccounts: document.querySelector('#find-ad-accounts'),
+  removeAds: document.querySelector('#remove-ads'),
+  adsFeedback: document.querySelector('#ads-feedback'),
+  discoveredAdAccounts: document.querySelector('#discovered-ad-accounts')
 };
 
 const state = {
@@ -60,6 +69,16 @@ async function init() {
   els.cancelClient.addEventListener('click', resetClientForm);
   els.copyCredentials.addEventListener('click', copyCredentials);
   els.logoutBtn.addEventListener('click', logout);
+  els.adsForm.addEventListener('submit', saveAds);
+  els.findAdAccounts.addEventListener('click', findAdAccounts);
+  els.removeAds.addEventListener('click', removeAds);
+  els.adsIgAccount.addEventListener('change', syncAdsForm);
+  els.discoveredAdAccounts.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-ad-account-id]');
+    if (!button) return;
+    els.adsAccountId.value = button.dataset.adAccountId;
+    setAdsFeedback(`Selected ${button.dataset.name}. Save and test to connect it.`, 'success');
+  });
 
   await Promise.all([loadStatus(), loadConfig()]);
   await loadClients();
@@ -137,6 +156,7 @@ async function loadConfig() {
       : 'Not connected';
     renderAccountsList(accounts, config.defaultAccountId || '');
     renderClientAccountChoices();
+    renderAdsAccountPicker();
     els.graphVersionInput.value = els.graphVersionInput.value || 'v23.0';
     els.tokenInput.placeholder = 'Paste token to add or replace an account';
   } catch (error) {
@@ -161,7 +181,7 @@ function renderAccountsList(accounts, defaultAccountId) {
         <span class="avatar">${avatar}</span>
         <div class="account-row-name">
           <strong>@${escapeHtml(account.username || 'instagram')}${isDefault ? ' <span class="default-badge">Default</span>' : ''}</strong>
-          <small>${escapeHtml(account.label ? `${account.label} · ` : '')}${escapeHtml(account.instagramUserId)}</small>
+          <small>${escapeHtml(account.label ? `${account.label} · ` : '')}${escapeHtml(account.instagramUserId)}${account.ads ? ` · Ads: ${escapeHtml(account.ads.name || account.ads.adAccountId)}` : ''}</small>
         </div>
         <div class="account-row-actions">
           <button class="secondary-button small-button" type="button" data-action="edit" ${attrs}>Edit</button>
@@ -377,6 +397,99 @@ function generatePassword(length = 16) {
 function setClientFeedback(message, type = '') {
   els.clientFeedback.className = `config-feedback ${type}`;
   els.clientFeedback.textContent = message || '';
+}
+
+// ---------------------------------------------------------------------------
+// Meta Ads connection
+// ---------------------------------------------------------------------------
+
+function renderAdsAccountPicker() {
+  const previous = els.adsIgAccount.value;
+  els.adsIgAccount.innerHTML = state.accounts.length
+    ? state.accounts.map((account) => `<option value="${escapeAttribute(account.instagramUserId)}">@${escapeHtml(account.username || account.instagramUserId)}${account.ads ? ' · ads connected' : ''}</option>`).join('')
+    : '<option value="">Connect an Instagram account first</option>';
+  if (state.accounts.some((account) => account.instagramUserId === previous)) els.adsIgAccount.value = previous;
+  syncAdsForm();
+}
+
+// Pre-fill the ad account already linked to the selected Instagram account.
+function syncAdsForm() {
+  const account = state.accounts.find((entry) => entry.instagramUserId === els.adsIgAccount.value);
+  els.adsAccountId.value = account?.ads?.adAccountId || '';
+  els.adsToken.value = '';
+  els.removeAds.disabled = !account?.ads;
+  els.discoveredAdAccounts.innerHTML = '';
+  setAdsFeedback(account?.ads ? `Connected to ${account.ads.name || account.ads.adAccountId} (${account.ads.currency || 'currency unknown'}).` : '', account?.ads ? 'success' : '');
+}
+
+async function findAdAccounts() {
+  setAdsBusy(true);
+  setAdsFeedback('Looking for ad accounts this token can read…', '');
+  els.discoveredAdAccounts.innerHTML = '';
+  try {
+    const payload = await sendJson('POST', '/api/config/ad-accounts', {
+      accessToken: els.adsToken.value.trim(),
+      instagramUserId: els.adsIgAccount.value
+    });
+    const accounts = payload.adAccounts || [];
+    els.discoveredAdAccounts.innerHTML = accounts.map((account) => `
+      <button class="account-option" type="button" data-ad-account-id="${escapeAttribute(account.id)}" data-name="${escapeAttribute(account.name)}">
+        <strong>${escapeHtml(account.name)}</strong>
+        <small>${escapeHtml(account.id)} · ${escapeHtml(account.currency)}${account.active ? '' : ' · not active'}</small>
+      </button>`).join('');
+    setAdsFeedback(accounts.length ? 'Choose the ad account below, then Save and test.' : 'This token can’t see any ad accounts. Check it has ads_read and access to the ad account in Business Manager.', accounts.length ? 'success' : 'error');
+  } catch (error) {
+    setAdsFeedback(error.message || 'Unable to list ad accounts', 'error');
+  } finally {
+    setAdsBusy(false);
+  }
+}
+
+async function saveAds(event) {
+  event.preventDefault();
+  setAdsBusy(true);
+  setAdsFeedback('Testing ad account access…', '');
+  try {
+    const payload = await sendJson('POST', '/api/config/ads', {
+      instagramUserId: els.adsIgAccount.value,
+      adAccountId: els.adsAccountId.value.trim(),
+      accessToken: els.adsToken.value.trim()
+    });
+    await loadConfig();
+    renderClientsList();
+    setAdsFeedback(`Connected ${payload.adAccount.name} (${payload.adAccount.currency}). Clients assigned to this Instagram account now see an Ads page.`, 'success');
+  } catch (error) {
+    setAdsFeedback(error.message || 'Unable to connect this ad account', 'error');
+  } finally {
+    setAdsBusy(false);
+  }
+}
+
+async function removeAds() {
+  const id = els.adsIgAccount.value;
+  if (!id || !window.confirm('Disconnect the ad account from this Instagram account? Clients lose the Ads page for it.')) return;
+  setAdsBusy(true);
+  try {
+    await sendJson('DELETE', `/api/config/ads?id=${encodeURIComponent(id)}`);
+    await loadConfig();
+    setAdsFeedback('Ad account disconnected.', 'success');
+  } catch (error) {
+    setAdsFeedback(error.message || 'Unable to disconnect', 'error');
+  } finally {
+    setAdsBusy(false);
+  }
+}
+
+function setAdsBusy(isBusy) {
+  els.saveAds.disabled = isBusy;
+  els.findAdAccounts.disabled = isBusy;
+  const account = state.accounts.find((entry) => entry.instagramUserId === els.adsIgAccount.value);
+  els.removeAds.disabled = isBusy || !account?.ads;
+}
+
+function setAdsFeedback(message, type = '') {
+  els.adsFeedback.className = `config-feedback ${type}`;
+  els.adsFeedback.textContent = message || '';
 }
 
 // ---------------------------------------------------------------------------

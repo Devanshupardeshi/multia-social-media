@@ -173,9 +173,51 @@
             <p class="panel-footnote" id="persist-note" hidden></p>
           </div>
         </section>
+
+        <section class="panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="section-label">Meta Ads</p>
+              <h2>Connect an ad account</h2>
+            </div>
+          </div>
+          <div class="connect-body">
+            <form class="connect-form" id="ads-form" autocomplete="off">
+              <label class="field-stack">
+                <span>Instagram account</span>
+                <select id="ads-ig-account"></select>
+              </label>
+              <label class="field-stack token-field">
+                <span>Ads token (Facebook, with ads_read)</span>
+                <input id="ads-token" type="password" spellcheck="false" placeholder="Blank = keep stored token, or reuse a Facebook account token">
+              </label>
+              <label class="field-stack">
+                <span>Ad account ID</span>
+                <input id="ads-account-id" spellcheck="false" placeholder="act_1234567890">
+              </label>
+              <div class="connect-actions">
+                <button class="primary-button" id="save-ads" type="submit">Save and test</button>
+                <button class="secondary-button" id="find-ad-accounts" type="button">Find ad accounts</button>
+                <button class="secondary-button" id="remove-ads" type="button">Remove ads</button>
+              </div>
+            </form>
+            <div class="token-guide">
+              <div>
+                <p class="guide-title">Which token</p>
+                <p>A Facebook user or System User token with <strong>ads_read</strong>. Instagram-login tokens (starting "IG") can't read ads. A System User token from Business Manager doesn't expire.</p>
+              </div>
+              <div>
+                <p class="guide-title">Who sees it</p>
+                <p>Any client login assigned to this Instagram account gets an <strong>Ads</strong> page for this ad account — and only this one.</p>
+              </div>
+            </div>
+            <div class="config-feedback" id="ads-feedback" role="status" aria-live="polite"></div>
+            <div class="discovered-accounts" id="discovered-ad-accounts"></div>
+          </div>
+        </section>
       </div>
     </div>
 
-    <script src="/admin.js?v=5" type="module"></script>
+    <script src="/admin.js?v=6" type="module"></script>
   </body>
 </html>

@@ -3683,3 +3683,53 @@ body.view-overview .nav-item[href^="#"] {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Meta Ads page. Tiles, split bar and tables reuse the account-insights and content styles. */
+.ads-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+
+.ads-tiles {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.ads-subhead {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ads-table {
+  width: 100%;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ads-table th,
+.ads-table td {
+  padding: 8px 10px;
+  text-align: right;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.ads-table th:first-child,
+.ads-table td:first-child {
+  text-align: left;
+  white-space: normal;
+}
+
+.ads-table td small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.ads-table td .delta-badge {
+  display: block;
+}
