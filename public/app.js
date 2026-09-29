@@ -33,7 +33,7 @@ const state = {
   accountCompareRange: null,
   adsRange: null,
   adsCompareRange: null,
-  hasAds: false,
+  hasAds: null, // null = not checked yet, then true / false from /api/status
   usernameHidden: false,
   role: ''
 };
@@ -114,6 +114,7 @@ const els = {
   exportPdf: document.querySelector('#export-pdf'),
   logoutButton: document.querySelector('#logout-button'),
   adminNavItem: document.querySelector('.nav-item[href="/admin"]'),
+  guideNavItem: document.querySelector('.nav-item[href="#guide"]'),
   accountsNavItem: document.querySelector('.nav-item[href="/"]'),
   adsNavItem: document.querySelector('#ads-nav-item'),
   adsRangeTrigger: document.querySelector('#ads-range-trigger'),
@@ -829,6 +830,7 @@ const APP_PAGES = ['overview', 'analytics', 'audience', 'ads', 'content', 'opera
 function currentPage() {
   const hash = location.hash.replace('#', '');
   if (hash === 'reels') return 'content'; // legacy anchor
+  if (hash === 'guide' && state.role === 'client') return 'overview'; // the guide is for the agency
   return APP_PAGES.includes(hash) ? hash : 'overview';
 }
 
@@ -847,9 +849,12 @@ function applyPage() {
 
 // The server already refuses everything a client may not see; this only tidies the UI so
 // they are never offered a link that would bounce them.
+// Admin and Guide start hidden in the HTML and are revealed here for the admin only, so a
+// client never sees them flash in before the role is known.
 function applyRoleUi() {
   const isClient = state.role === 'client';
   els.adminNavItem?.classList.toggle('hidden', isClient);
+  els.guideNavItem?.classList.toggle('hidden', isClient);
   els.accountsNavItem?.classList.toggle('hidden', isClient && state.accounts.length < 2);
 }
 
@@ -909,8 +914,14 @@ function adsMoney(value, currency, compact = false) {
 function renderAds() {
   if (!els.adsBody) return;
   updateAdsRangeLabel();
+  // No point offering a date range for ads that aren't connected.
+  els.adsRangeTrigger?.closest('.range-control')?.classList.toggle('hidden', state.hasAds !== true);
+  if (state.hasAds === null) {
+    els.adsBody.innerHTML = '<div class="chart-empty is-loading">Checking ads for this account…</div>';
+    return;
+  }
   if (!state.hasAds) {
-    els.adsBody.innerHTML = '<div class="chart-empty">No ad account connected yet.</div>';
+    els.adsBody.innerHTML = adsNotEnabledHtml();
     return;
   }
 
@@ -944,6 +955,22 @@ function renderAds() {
     adsCampaignTable(a, b, currency),
     `<p class="panel-footnote">${escapeHtml(adsFootnote(a))}</p>`
   ].join('');
+}
+
+// The Ads item is always in the nav; when no ad account is linked the page says so, and
+// tells each role what to do about it.
+function adsNotEnabledHtml() {
+  const account = state.accounts.find((entry) => entry.id === state.accountId) || state.accounts[0];
+  const name = account?.username ? `@${account.username}` : 'this account';
+  const next = state.role === 'admin'
+    ? `<p>Connect the Meta ad account for ${escapeHtml(name)} in Admin → <strong>Meta Ads</strong>. It needs a Facebook token with <strong>ads_read</strong>.</p>
+       <a class="primary-button small-button" href="/admin">Connect an ad account</a>`
+    : '<p>Your Multia account manager can switch this on by connecting your Meta ad account. Your ad spend, reach, clicks and campaign results will then appear here.</p>';
+  return `
+    <div class="ads-empty">
+      <p class="ads-empty-title">Ads aren't enabled for ${escapeHtml(name)} yet</p>
+      ${next}
+    </div>`;
 }
 
 function adsTile({ label, value, prev, main, sub, invert = false, format }) {
@@ -1346,7 +1373,6 @@ async function loadStatus() {
     const status = await fetchJson(withAccount('/api/status'));
     state.refreshMs = status.refreshMs || state.refreshMs;
     state.hasAds = Boolean(status.hasAds);
-    els.adsNavItem?.classList.toggle('hidden', !state.hasAds);
     if (currentPage() === 'ads') renderAds();
     els.refreshSelect.value = String(closestRefreshOption(state.refreshMs));
     updateConnection(status.mode === 'graph-api' ? 'connected' : 'demo', status.mode === 'graph-api' ? 'Graph API' : 'Demo mode');

@@ -3733,3 +3733,28 @@ body.view-overview .nav-item[href^="#"] {
 .ads-table td .delta-badge {
   display: block;
 }
+
+/* Ads page when no ad account is linked to this Instagram account yet. */
+.ads-empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 22px 20px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+}
+
+.ads-empty p {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.ads-empty .ads-empty-title {
+  color: var(--ink);
+  font-size: 0.98rem;
+  font-weight: 600;
+}
